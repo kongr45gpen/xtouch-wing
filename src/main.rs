@@ -1,9 +1,8 @@
 use anyhow::{Context, Result};
-use rosc::{OscPacket, OscMessage, encoder};
 use clap::Parser;
 use colored::Colorize;
 use env_logger::Env;
-use log::{info, error, warn, debug};
+use log::{debug, error, info, warn};
 
 mod console;
 mod data;
@@ -22,16 +21,16 @@ struct Cli {
     local_port: u16,
 }
 
-
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Set log level based on debug flag
     let log_level = if cli.debug { "debug" } else { "info" };
     env_logger::Builder::from_env(Env::default().default_filter_or(log_level)).init();
 
-    let config = settings::Settings::new()
-        .with_context(|| "Failed to load configuration settings")?;
+    let config =
+        settings::Settings::new().with_context(|| "Failed to load configuration settings")?;
 
     if cli.debug {
         debug!("{}", "Debug mode is enabled".yellow());
@@ -41,7 +40,11 @@ fn main() -> Result<()> {
     // OSC connection logic
     let remote_addr = format!("{}:{}", config.console.ip, config.console.port);
     let console = console::Console::new(&remote_addr, cli.local_port)
+        .await
         .with_context(|| "Failed to create OSC console connection")?;
+
+    // TODO: Use a proper runtime, wait until all tasks are complete
+    tokio::time::sleep(tokio::time::Duration::from_secs(6000)).await;
 
     Ok(())
 }

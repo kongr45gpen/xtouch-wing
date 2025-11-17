@@ -1,79 +1,246 @@
 //! WING Console Interface
 
-use anyhow::{Context, Result};
-use log::{debug, info, warn};
-use rosc::{decoder, OscMessage, OscPacket, encoder};
-use std::collections::{HashMap};
-use std::net::{UdpSocket};
+use anyhow::{Context, Result, bail};
+use log::{debug, error, info, warn};
+use rosc::{OscMessage, OscPacket, OscType, decoder, encoder};
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
-use crate::console;
-use crate::data::Fader;
+/// Value types stored in the parameter cache (replaces Fader)
+#[derive(Debug, Clone, PartialEq)]
+pub enum Value {
+    Int(i32),
+    Float(f32),
+    Str(String),
+    Blob(Vec<u8>),
+}
 
-/// OSC connection and parameter cache
+use tokio::net::UdpSocket;
+use tokio::sync::RwLock;
+use tokio::time::timeout;
+
+/// WING connection and parameter cache
 pub struct Console {
-    socket: UdpSocket,
+    socket: Arc<UdpSocket>,
     remote_addr: String,
-    pub parameter_cache: HashMap<String, Fader>,
+    /// A list of currently known OSC parameters. This will be kept up to date by the
+    /// subscription.
+    pub cache: Arc<RwLock<HashMap<String, Value>>>,
 }
 
 impl Console {
-    pub fn new(remote_addr: &str, local_port: u16) -> Result<Self> {
+    /// Create and connect a new Console (async).
+    pub async fn new(remote_addr: &str, local_port: u16) -> Result<Self> {
         use colored::Colorize;
 
         let local_addr = format!("0.0.0.0:{}", local_port);
         let socket = UdpSocket::bind(&local_addr)
+            .await
             .with_context(|| format!("Failed to bind UDP socket to {}", local_addr))?;
-        socket.set_read_timeout(Some(Duration::from_secs(2))).ok();
 
-        socket.connect(remote_addr)
+        socket
+            .connect(remote_addr)
+            .await
             .with_context(|| format!("Failed to connect UDP socket to {}", remote_addr))?;
+        let socket = Arc::new(socket);
+        let parameter_cache = Arc::new(RwLock::new(HashMap::new()));
 
         let console = Self {
-            socket,
+            socket: socket.clone(),
             remote_addr: remote_addr.to_string(),
-            parameter_cache: HashMap::new(),
+            cache: parameter_cache.clone(),
         };
 
-        console.identify().with_context(|| "Failed to identify OSC device")?;
+        console
+            .identify()
+            .await
+            .with_context(|| "Failed to identify OSC device")?;
 
-        info!("OSC connected to {} (local bound to {})", remote_addr.green(), local_addr);
+        console.spawn_subscribe_task();
+        console.spawn_recv_task();
+
+        info!(
+            "OSC connected to {} (local bound to {})",
+            remote_addr.green(),
+            local_addr
+        );
 
         Ok(console)
     }
 
-    fn identify(&self) -> Result<()> {
-        let osc_msg = OscPacket::Message(OscMessage{
+    /// Send an OSC "identify" query and wait (with timeout) for a response.
+    async fn identify(&self) -> Result<()> {
+        let osc_msg = OscPacket::Message(OscMessage {
             addr: "/?".to_string(),
             args: vec![],
         });
-        let buf = encoder::encode(&osc_msg)
-            .with_context(|| "Failed to encode OSC packet")?;
-        self.socket.send(&buf)?;
+        let buf = encoder::encode(&osc_msg).with_context(|| "Failed to encode OSC packet")?;
+        self.socket.send(&buf).await?;
 
         let mut recv_buf = [0u8; 1024];
-        match self.socket.recv(&mut recv_buf) {
-            Ok(size) => {
-                let packet = decoder::decode_udp(&recv_buf[..size])
+
+        match timeout(Duration::from_secs(2), self.socket.recv(&mut recv_buf)).await {
+            Ok(Ok(size)) => {
+                let (_, packet) = decoder::decode_udp(&recv_buf[..size])
                     .with_context(|| "Failed to decode OSC packet")?;
-                match packet {
-                    (_, msg) => {
-                        debug!("Received OSC identification response: {:?}", msg);
-                    },
-                    _ => {
-                        warn!("Unexpected OSC packet type received during identification");
-                    }
-                }
-            },
-            Err(e) => {
-                warn!("No response received during OSC identification: {}", e);
+
+                debug!("Received OSC identification response: {:?}", packet);
+            }
+            Ok(Err(e)) => {
+                bail!("Error receiving during OSC identification: {}", e);
+            }
+            Err(_) => {
+                bail!("No response received during OSC identification: timeout");
             }
         }
 
         Ok(())
     }
 
-    pub fn get_f32(&self, address: &str) -> Option<f32> {
-        self.parameter_cache.get(address).map(|fader| fader.last_value)
+    fn spawn_subscribe_task(&self) {
+        let socket = self.socket.clone();
+
+        tokio::spawn(async move {
+            let subscribe_message = OscPacket::Message(OscMessage {
+                addr: "/*S".to_string(),
+                args: vec![],
+            });
+
+            let subscribe_message = encoder::encode(&subscribe_message)
+                .with_context(|| "Failed to encode OSC subscribe packet")
+                .unwrap();
+
+            debug!("Starting OSC subscription");
+
+            loop {
+                if let Err(e) = socket.send(&subscribe_message).await {
+                    warn!("Failed to send OSC subscribe packet: {}", e);
+                }
+                tokio::time::sleep(Duration::from_secs(8)).await;
+            }
+        });
+    }
+
+    /// Spawn a background tokio task that listens for incoming OSC packets
+    /// and updates the parameter cache.
+    fn spawn_recv_task(&self) {
+        let socket = self.socket.clone();
+        let cache = self.cache.clone();
+
+        tokio::spawn(async move {
+            let mut buf = [0u8; 2048];
+
+            loop {
+                match socket.recv(&mut buf).await {
+                    Ok(size) => {
+                        // hand raw UDP bytes to the packet processor (it will decode)
+                        Console::process_packet_bytes(cache.clone(), &buf[..size]).await;
+                    }
+                    Err(e) => {
+                        warn!("Error receiving OSC packet: {}", e);
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                }
+            }
+        });
+    }
+    
+    /// Decode raw UDP bytes into OSC packets and update the cache.
+    async fn process_packet_bytes(cache: Arc<RwLock<HashMap<String, Value>>>, data: &[u8]) {
+        match decoder::decode_udp(data) {
+            Ok((_, packet)) => {
+                match packet {
+                    OscPacket::Message(msg) => {
+                        Console::handle_message(cache.clone(), msg).await;
+                    }
+                    OscPacket::Bundle(_) => {
+                        error!("I am not equipped to handle OSC bundles, I hope they don't show up!");
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Failed to decode incoming OSC packet: {}", e);
+            }
+        }
+    }
+
+    /// Handle a single OSC message and update the cache.
+    async fn handle_message(cache: Arc<RwLock<HashMap<String, Value>>>, msg: OscMessage) {
+        debug!("Received OSC message: {:20} args={:?}", msg.addr, msg.args);
+
+        let addr = msg.addr.clone();
+        let arg = msg.args.first();
+        let mut guard = cache.write().await;
+
+        if let Some(arg) = arg {
+            match arg {
+                OscType::Float(f) => {
+                    guard.insert(addr, Value::Float(*f));
+                }
+                OscType::Int(i) => {
+                    guard.insert(addr, Value::Int(*i));
+                }
+                OscType::String(s) => {
+                    guard.insert(addr, Value::Str(s.clone()));
+                }
+                OscType::Blob(b) => {
+                    guard.insert(addr, Value::Blob(b.clone()));
+                }
+                _ => {
+                    warn!("Unsupported OSC argument type for {}: {:?}", addr, arg);
+                }
+            }
+        } else {
+            warn!("OSC message {} has no arguments", msg.addr);
+        }
+    }
+    
+    /// Performs a request for an OSC value, without returning it.
+    async fn request_value(&self, osc_addr: &str) -> Result<()> {
+        let osc_msg = OscPacket::Message(OscMessage {
+            addr: osc_addr.to_string(),
+            args: vec![],
+        });
+        let buf = encoder::encode(&osc_msg).with_context(|| "Failed to encode OSC packet")?;
+        self.socket.send(&buf).await?;
+        Ok(())
+    }
+
+    /// Performs a request for an OSC value if it is not in the cache.
+    pub async fn ensure_value(&self, osc_addr: &str) -> Result<()> {
+        {
+            let guard = self.cache.read().await;
+            if guard.contains_key(osc_addr) {
+                return Ok(());
+            }
+        }
+
+        // If not found in cache, request the value
+        self.request_value(osc_addr).await?;
+
+        Ok(())
+    }
+
+    /// Get an OSC value
+    async fn get_value(&self, osc_addr: &str) -> Result<Option<Value>> {
+        {
+            let guard = self.cache.read().await;
+            if let Some(value) = guard.get(osc_addr) {
+                return Ok(Some(value.clone()));
+            }
+        }
+
+        // If not found in cache, request the value
+        self.request_value(osc_addr).await?;
+
+        // Wait a bit for the response to arrive and be processed
+        // TODO: Ideally we should get a notification from the RX task when this is ready
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        let guard = self.cache.read().await;
+        Ok(guard.get(osc_addr).cloned())
     }
 }
+
+
