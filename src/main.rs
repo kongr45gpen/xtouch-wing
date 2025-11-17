@@ -4,6 +4,7 @@ use colored::Colorize;
 use env_logger::Env;
 use log::{debug, error, info, warn};
 
+mod midi;
 mod console;
 mod data;
 mod settings;
@@ -42,6 +43,9 @@ async fn main() -> Result<()> {
     let console = console::Console::new(&remote_addr, cli.local_port)
         .await
         .with_context(|| "Failed to create OSC console connection")?;
+
+    let midi = midi::Controller::new(&config.midi.input, &config.midi.output)
+        .with_context(|| "Failed to create MIDI controller")?;
 
     // TODO: Use a proper runtime, wait until all tasks are complete
     tokio::time::sleep(tokio::time::Duration::from_secs(6000)).await;

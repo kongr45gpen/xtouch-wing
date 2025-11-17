@@ -28,10 +28,18 @@ pub(crate) struct ConsoleSettings {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)] 
+pub(crate) struct ControllerSettings {
+    pub input: String,
+    pub output: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)] 
 pub(crate) struct Settings {
     pub faders: [FaderAssignment; 8],
     pub master: FaderAssignment,
     pub console: ConsoleSettings,
+    pub midi: ControllerSettings,
 }
 
 impl Default for Settings {
@@ -51,6 +59,10 @@ impl Default for Settings {
             console: ConsoleSettings {
                 ip: "127.0.0.1".to_string(),
                 port: 2223,
+            },
+            midi: ControllerSettings {
+                input: "X-Touch".to_string(),
+                output: "X-Touch".to_string(),
             },
         }
     }
