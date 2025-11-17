@@ -44,10 +44,11 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| "Failed to create OSC console connection")?;
 
-    let midi = midi::Controller::new(&config.midi.input, &config.midi.output)
+    let mut midi = midi::Controller::new(&config.midi.input, &config.midi.output)
         .with_context(|| "Failed to create MIDI controller")?;
 
     // TODO: Use a proper runtime, wait until all tasks are complete
+    midi.vegas_mode(true).await?;
     tokio::time::sleep(tokio::time::Duration::from_secs(6000)).await;
 
     Ok(())
