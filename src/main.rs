@@ -20,6 +20,10 @@ struct Cli {
     /// Local UDP port to bind (default: 9001)
     #[arg(long, default_value_t = 9001)]
     local_port: u16,
+
+    /// Enable vegas mode (for testing)
+    #[arg(long, default_value_t = false)]
+    vegas: bool,
 }
 
 #[tokio::main]
@@ -48,7 +52,10 @@ async fn main() -> Result<()> {
         .with_context(|| "Failed to create MIDI controller")?;
 
     // TODO: Use a proper runtime, wait until all tasks are complete
-    midi.vegas_mode(true).await?;
+    if cli.vegas {
+        warn!("{}", "Test run, Vegas mode".yellow());
+        midi.vegas_mode(true).await?;
+    }
     tokio::time::sleep(tokio::time::Duration::from_secs(6000)).await;
 
     Ok(())

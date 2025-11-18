@@ -16,12 +16,7 @@ pub struct Controller {
 }
 
 impl Controller {
-    /// Create a new `Controller` with default client names.
-    ///
-    /// This will initialize both a `MidiInput` and `MidiOutput` instance and
-    /// return them wrapped in the `Controller` struct. It does not open any
-    /// ports or create active connections; that can be done by the caller with
-    /// the returned `input`/`output` handles.
+    /// Create a new MIDI controller and initialise connections
     pub fn new(input_name: &str, output_name: &str) -> Result<Self> {
         let input = MidiInput::new("X-Touch Wing IN")?;
         let output = MidiOutput::new("X-Touch Wing OUT")?;
@@ -53,11 +48,11 @@ impl Controller {
         })
     }
 
+    /// Runs a never-ending Vegas mode test pattern.
     pub async fn vegas_mode(&mut self, enabled: bool) -> Result<()> {
         let mut clk = 0;
 
         loop {
-            debug!("Vegas   {}", enabled);
             tokio::time::sleep(tokio::time::Duration::from_millis(1000 / 30)).await;
 
             let mut buf = Vec::new();
