@@ -8,6 +8,7 @@ mod midi;
 mod console;
 mod data;
 mod settings;
+mod mqtt;
 
 /// XTouch Wing - Command line options
 #[derive(Parser, Debug)]
@@ -50,6 +51,10 @@ async fn main() -> Result<()> {
 
     let mut midi = midi::Controller::new(&config.midi.input, &config.midi.output)
         .with_context(|| "Failed to create MIDI controller")?;
+
+    let mut mqtt = mqtt::Mqtt::new(&config.mqtt.host, config.mqtt.port)
+        .await
+        .with_context(|| "Failed to create MQTT client")?;
 
     // TODO: Use a proper runtime, wait until all tasks are complete
     if cli.vegas {

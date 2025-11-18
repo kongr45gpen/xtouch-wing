@@ -58,12 +58,20 @@ pub(crate) struct MidiTemplate {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)] 
+pub(crate) struct MqttSettings {
+    pub host: String,
+    pub port: u16,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)] 
 pub(crate) struct Settings {
     pub faders: [FaderAssignment; 8],
     pub master: FaderAssignment,
     pub console: ConsoleSettings,
     pub midi: ControllerSettings,
     pub midi_template: MidiTemplate,
+    pub mqtt: MqttSettings,
 }
 
 impl MidiTemplate {
@@ -207,6 +215,10 @@ impl Default for Settings {
                 output: "X-Touch".to_string(),
             },
             midi_template: MidiTemplate::x_touch_full(),
+            mqtt: MqttSettings {
+                host: "localhost".to_string(),
+                port: 1883,
+            },
         }
     }
 }
