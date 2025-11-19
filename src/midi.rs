@@ -7,7 +7,11 @@ use log::debug;
 use log::info;
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use midly::PitchBend;
+use midly::io::Write;
 use midly::live::LiveEvent;
+
+use crate::console::Value;
+use crate::orchestrator::WriteProvider;
 
 /// Simple controller owning a MIDI input and output handle.
 pub struct Controller {
@@ -99,6 +103,12 @@ impl Controller {
         }
 
         Ok(())
+    }
+}
+
+impl WriteProvider for Controller {
+    fn write(&self, addr: &str, value: Value) -> anyhow::Result<()> {
+        unimplemented!("I was asked to write a value to the MIDI")
     }
 }
 

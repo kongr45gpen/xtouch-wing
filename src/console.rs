@@ -17,8 +17,10 @@ pub enum Value {
 }
 
 use tokio::net::UdpSocket;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio::time::timeout;
+
+use crate::orchestrator::Interface;
 
 /// WING connection and parameter cache
 pub struct Console {
@@ -27,6 +29,7 @@ pub struct Console {
     /// A list of currently known OSC parameters. This will be kept up to date by the
     /// subscription.
     pub cache: Arc<RwLock<HashMap<String, Value>>>,
+    interface: Arc<Mutex<Option<Interface>>>,
 }
 
 impl Console {
@@ -50,6 +53,7 @@ impl Console {
             socket: socket.clone(),
             remote_addr: remote_addr.to_string(),
             cache: parameter_cache.clone(),
+            interface: Mutex::new(None).into(),
         };
 
         console
@@ -127,6 +131,7 @@ impl Console {
     fn spawn_recv_task(&self) {
         let socket = self.socket.clone();
         let cache = self.cache.clone();
+        let interface = self.interface.clone();
 
         tokio::spawn(async move {
             let mut buf = [0u8; 2048];
@@ -135,7 +140,7 @@ impl Console {
                 match socket.recv(&mut buf).await {
                     Ok(size) => {
                         // hand raw UDP bytes to the packet processor (it will decode)
-                        Console::process_packet_bytes(cache.clone(), &buf[..size]).await;
+                        Console::process_packet_bytes(cache.clone(), interface.clone(), &buf[..size]).await;
                     }
                     Err(e) => {
                         warn!("Error receiving OSC packet: {}", e);
@@ -147,12 +152,12 @@ impl Console {
     }
     
     /// Decode raw UDP bytes into OSC packets and update the cache.
-    async fn process_packet_bytes(cache: Arc<RwLock<HashMap<String, Value>>>, data: &[u8]) {
+    async fn process_packet_bytes(cache: Arc<RwLock<HashMap<String, Value>>>, interface: Arc<Mutex<Option<Interface>>>, data: &[u8]) {
         match decoder::decode_udp(data) {
             Ok((_, packet)) => {
                 match packet {
                     OscPacket::Message(msg) => {
-                        Console::handle_message(cache.clone(), msg).await;
+                        Console::handle_message(cache.clone(), interface, msg).await;
                     }
                     OscPacket::Bundle(_) => {
                         error!("I am not equipped to handle OSC bundles, I hope they don't show up!");
@@ -166,30 +171,30 @@ impl Console {
     }
 
     /// Handle a single OSC message and update the cache.
-    async fn handle_message(cache: Arc<RwLock<HashMap<String, Value>>>, msg: OscMessage) {
+    async fn handle_message(cache: Arc<RwLock<HashMap<String, Value>>>, interface: Arc<Mutex<Option<Interface>>>, msg: OscMessage) {
         debug!("Received OSC message: {:20} args={:?}", msg.addr, msg.args);
 
         let addr = msg.addr.clone();
         let arg = msg.args.first();
-        let mut guard = cache.write().await;
+        // let mut guard = cache.write().await;
 
         if let Some(arg) = arg {
-            match arg {
-                OscType::Float(f) => {
-                    guard.insert(addr, Value::Float(*f));
-                }
-                OscType::Int(i) => {
-                    guard.insert(addr, Value::Int(*i));
-                }
-                OscType::String(s) => {
-                    guard.insert(addr, Value::Str(s.clone()));
-                }
-                OscType::Blob(b) => {
-                    guard.insert(addr, Value::Blob(b.clone()));
-                }
+            let value =  match arg {
+                OscType::Float(f) => Value::Float(*f),
+                OscType::Int(i) => Value::Int(*i),
+                OscType::String(s) => Value::Str(s.clone()),
+                OscType::Blob(b) => Value::Blob(b.clone()),
                 _ => {
                     warn!("Unsupported OSC argument type for {}: {:?}", addr, arg);
+                    return;
                 }
+            };
+
+            // guard.insert(addr.clone(), value.clone());
+
+            // interface.lock().await.inspect(async |iface: &Interface| { iface.set_value(&addr, value).await; });
+            if let Some(iface) = interface.lock().await.as_ref() {
+                iface.set_value(&addr, value).await;
             }
         } else {
             warn!("OSC message {} has no arguments", msg.addr);
@@ -223,7 +228,7 @@ impl Console {
     }
 
     /// Get an OSC value
-    async fn get_value(&self, osc_addr: &str) -> Result<Option<Value>> {
+    pub async fn get_value(&self, osc_addr: &str) -> Result<Option<Value>> {
         {
             let guard = self.cache.read().await;
             if let Some(value) = guard.get(osc_addr) {
@@ -241,6 +246,26 @@ impl Console {
         let guard = self.cache.read().await;
         Ok(guard.get(osc_addr).cloned())
     }
+
+    /// Set an OSC value
+    pub async fn set_value(&self, osc_addr: &str, value: Value) -> Result<()> {
+        let osc_type = match value {
+            Value::Float(f) => OscType::Float(f),
+            Value::Int(i) => OscType::Int(i),
+            Value::Str(s) => OscType::String(s),
+            Value::Blob(b) => OscType::Blob(b),
+        };
+        let osc_msg = OscPacket::Message(OscMessage {
+            addr: osc_addr.to_string(),
+            args: vec![osc_type],
+        });
+        let buf = encoder::encode(&osc_msg).with_context(|| "Failed to encode OSC packet")?;
+        self.socket.send(&buf).await?;
+        Ok(())
+    }
+
+    pub async fn set_interface(&mut self, interface: Interface) {
+        self.interface.lock().await.replace(interface);
+        // self.interface.replace(interface);
+    }
 }
-
-

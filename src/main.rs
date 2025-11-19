@@ -11,11 +11,12 @@ use colored::Colorize;
 use env_logger::Env;
 use log::{debug, error, info, warn};
 
-mod midi;
 mod console;
 mod data;
-mod settings;
+mod midi;
 mod mqtt;
+mod orchestrator;
+mod settings;
 
 /// XTouch Wing - Command line options
 #[derive(Parser, Debug)]
@@ -63,11 +64,16 @@ async fn main() -> Result<()> {
     //     .await
     //     .with_context(|| "Failed to create MQTT client")?;
 
+    // if cli.vegas {
+    //     warn!("{}", "Test run, Vegas mode".yellow());
+    //     midi.vegas_mode(true).await?;
+    // }
+
+    let mut midi_arc = std::sync::Arc::new(Box::new(midi) as Box<dyn orchestrator::WriteProvider>);
+
+    let mut orchestrator = orchestrator::Orchestrator::new(console, vec![midi_arc]).await;
+
     // TODO: Use a proper runtime, wait until all tasks are complete
-    if cli.vegas {
-        warn!("{}", "Test run, Vegas mode".yellow());
-        midi.vegas_mode(true).await?;
-    }
     tokio::time::sleep(tokio::time::Duration::from_secs(6000)).await;
 
     Ok(())
