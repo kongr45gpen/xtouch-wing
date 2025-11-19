@@ -2,6 +2,8 @@
 //! 
 //! Settings can be provided via external YAML file or environment variables
 
+use std::collections::HashMap;
+
 use figment::providers::Format;
 use figment::Figment;
 use log::debug;
@@ -27,10 +29,29 @@ pub(crate) struct ConsoleSettings {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FaderBank {
+    pub name: Option<String>,
+    pub faders: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ControllerAssignments {
+    pub banks: Vec<FaderBank>,
+    pub fader_buttons: Vec<String>,
+
+    pub fixed_faders: HashMap<u32, String>,
+    pub fixed_buttons: HashMap<u32, String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)] 
 pub(crate) struct ControllerSettings {
     pub input: String,
     pub output: String,
+
+    pub assignments: ControllerAssignments,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -51,7 +72,7 @@ pub(crate) struct MidiFader {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct MidiTemplate {
+pub(crate) struct MidiDefinition {
     pub faders: Vec<MidiFader>,
     pub buttons: Vec<MidiButton>,
 }
@@ -70,12 +91,77 @@ pub(crate) struct Settings {
     pub master: FaderAssignment,
     pub console: ConsoleSettings,
     pub midi: ControllerSettings,
-    pub midi_template: MidiTemplate,
+    pub midi_definition: MidiDefinition,
     pub mqtt: MqttSettings,
 }
 
-impl MidiTemplate {
-    /// Example MIDI template for Behringer X-Touch
+impl ControllerAssignments {
+    /// Example MIDI assignments for Behringer X-Touch
+    fn x_touch_full() -> Self {
+        ControllerAssignments {
+            banks: vec![
+                FaderBank {
+                    name: Some("CH 1-8".to_string()),
+                    faders: (1..=8).map(|i| format!("Channel {}", i)).collect(),
+                },
+                FaderBank {
+                    name: Some("CH 9-16".to_string()),
+                    faders: (9..=16).map(|i| format!("Channel {}", i)).collect(),
+                },
+                FaderBank {
+                    name: Some("CH 17-24".to_string()),
+                    faders: (17..=24).map(|i| format!("Channel {}", i)).collect(),
+                },
+                FaderBank {
+                    name: Some("CH 25-32".to_string()),
+                    faders: (25..=32).map(|i| format!("Channel {}", i)).collect(),
+                },
+                FaderBank {
+                    name: Some("CH 33-40".to_string()),
+                    faders: (33..=40).map(|i| format!("Channel {}", i)).collect(),
+                },
+                FaderBank {
+                    name: Some("AUX 1-8".to_string()),
+                    faders: (1..=8).map(|i| format!("Aux {}", i)).collect(),
+                },
+                FaderBank {
+                    name: Some("BUS 1-8".to_string()),
+                    faders: (1..=8).map(|i| format!("Bus {}", i)).collect(),
+                },
+                FaderBank {
+                    name: Some("BUS 9-16".to_string()),
+                    faders: (9..=16).map(|i| format!("Bus {}", i)).collect(),
+                }, 
+                FaderBank {
+                    name: Some("MAIN".to_string()),
+                    faders: (1..=4).map(|i| format!("Main {}", i)).collect(),
+                },
+                FaderBank {
+                    name: Some("MATRIX".to_string()),
+                    faders: (1..=8).map(|i| format!("Matrix {}", i)).collect(),
+                },
+                FaderBank {
+                    name: Some("DCA 1-8".to_string()),
+                    faders: (1..=8).map(|i| format!("DCA {}", i)).collect(),
+                },
+                FaderBank {
+                    name: Some("DCA 9-16".to_string()),
+                    faders: (9..=16).map(|i| format!("DCA {}", i)).collect(),
+                },
+            ],
+            fader_buttons: vec![ 
+                "Rec".to_string(),
+                "Solo".to_string(),
+                "Mute".to_string(),
+             ],
+            fixed_faders: HashMap::new(),
+            fixed_buttons: HashMap::new(),
+        }
+    }
+}
+
+impl MidiDefinition {
+    /// Example MIDI definition for Behringer X-Touch
     fn x_touch_full() -> Self {
         // TODO: Add touch 104...112
         let channel_buttons = [ "Rec", "Solo", "Mute", "Select", "Encoder Push" ];
@@ -185,7 +271,7 @@ impl MidiTemplate {
             MidiButton { channel: 0, key: 101, description: Some("Scrub".to_string()) },
         ];
 
-        MidiTemplate {
+        MidiDefinition {
             faders,
             buttons,
         }
@@ -213,8 +299,9 @@ impl Default for Settings {
             midi: ControllerSettings {
                 input: "X-Touch".to_string(),
                 output: "X-Touch".to_string(),
+                assignments: ControllerAssignments::x_touch_full(),
             },
-            midi_template: MidiTemplate::x_touch_full(),
+            midi_definition: MidiDefinition::x_touch_full(),
             mqtt: MqttSettings {
                 host: "localhost".to_string(),
                 port: 1883,
@@ -231,7 +318,7 @@ impl Settings {
             .merge(figment::providers::Env::prefixed("WING_").split("_"))
             .extract()?;
 
-        debug!("Loaded settings: {:?}", settings);
+        debug!("Loaded settings: {:#?}", settings);
 
         Ok(settings)
     }

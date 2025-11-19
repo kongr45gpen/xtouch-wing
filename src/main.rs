@@ -1,3 +1,10 @@
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(unreachable_code)]
+#![allow(unreachable_patterns)]
+#![allow(unused_imports)]
+#![allow(unused_mut)]
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use colored::Colorize;
@@ -52,9 +59,9 @@ async fn main() -> Result<()> {
     let mut midi = midi::Controller::new(&config.midi.input, &config.midi.output)
         .with_context(|| "Failed to create MIDI controller")?;
 
-    let mut mqtt = mqtt::Mqtt::new(&config.mqtt.host, config.mqtt.port)
-        .await
-        .with_context(|| "Failed to create MQTT client")?;
+    // let mut mqtt = mqtt::Mqtt::new(&config.mqtt.host, config.mqtt.port)
+    //     .await
+    //     .with_context(|| "Failed to create MQTT client")?;
 
     // TODO: Use a proper runtime, wait until all tasks are complete
     if cli.vegas {
