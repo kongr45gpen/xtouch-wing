@@ -33,6 +33,10 @@ struct Cli {
     /// Enable vegas mode (for testing)
     #[arg(long, default_value_t = false)]
     vegas: bool,
+
+    /// Enable vegas mode without faders (for testing)
+    #[arg(long, default_value_t = false)]
+    vegas_silent: bool,
 }
 
 #[tokio::main]
@@ -64,10 +68,13 @@ async fn main() -> Result<()> {
     //     .await
     //     .with_context(|| "Failed to create MQTT client")?;
 
-    // if cli.vegas {
-    //     warn!("{}", "Test run, Vegas mode".yellow());
-    //     midi.vegas_mode(true).await?;
-    // }
+    if cli.vegas {
+        warn!("{}", "Test run, Vegas mode".yellow());
+        midi.vegas_mode(true).await?;
+    } else if cli.vegas_silent {
+        warn!("{}", "Test run, Vegas mode silent".yellow());
+        midi.vegas_mode(false).await?;
+    }
 
     let mut midi_arc = std::sync::Arc::new(Box::new(midi) as Box<dyn orchestrator::WriteProvider>);
 
