@@ -1,6 +1,7 @@
 //! Common data types
 
 use anyhow::{Result, bail};
+use log::debug;
 use regex::Regex;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -14,10 +15,13 @@ enum FaderType {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum PathType {
+pub enum PathType {
     Fader,
     Panning,
     Mute,
+    ScribbleColour,
+    ScribbleName,
+    ScribbleLed,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,7 +38,50 @@ impl Fader {
             PathType::Fader => format!("{}/fdr", self.osc_directory),
             PathType::Panning => format!("{}/pan", self.osc_directory),
             PathType::Mute => format!("{}/mute", self.osc_directory),
+            PathType::ScribbleColour => format!("{}/$col", self.osc_directory),
+            PathType::ScribbleName => format!("{}/$name", self.osc_directory),
+            PathType::ScribbleLed => format!("{}led", self.osc_directory),
         }
+    }
+
+    pub fn path_matches(&self, osc_path: &str) -> Option<PathType> {
+        let parts: Vec<&str> = osc_path.rsplitn(2, '/').collect();
+
+        if parts.len() != 2 {
+            return None;
+        }
+
+        if parts[1] != self.osc_directory {
+            return None;
+        }
+
+        match parts[0] {
+            "fdr" => Some(PathType::Fader),
+            "pan" => Some(PathType::Panning),
+            "mute" => Some(PathType::Mute),
+            "$col" => Some(PathType::ScribbleColour),
+            "$name" => Some(PathType::ScribbleName),
+            "led" => Some(PathType::ScribbleLed),
+            _ => None,
+        }
+    }
+
+    /// Gamma correction from dB to float, adjusted for WING faders
+    pub fn db_to_float(db: f64) -> f64 {
+        const GAMMA: f64 = 1.333333333;
+        const BETA: f64 = 10.0;
+        const DELTA: f64 = -144.0;
+
+        GAMMA.powf(db / BETA - 1.0)
+    }
+
+    /// Gamma correction from float to dB, adjusted for WING faders
+    pub fn float_to_db(value: f64) -> f64 {
+        const GAMMA: f64 = 1.333333333;
+        const BETA: f64 = 10.0;
+        const DELTA: f64 = -144.0;
+
+        BETA * ( value.log(GAMMA) + 1.0)
     }
 
     pub fn new_from_label(label: &str) -> Result<Self> {

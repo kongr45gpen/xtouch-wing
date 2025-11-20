@@ -61,7 +61,7 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| "Failed to create OSC console connection")?;
 
-    let mut midi = midi::Controller::new(&config.midi.input, &config.midi.output)
+    let mut midi = midi::Controller::new(&config.midi, &config.midi_definition)
         .with_context(|| "Failed to create MIDI controller")?;
 
     // let mut mqtt = mqtt::Mqtt::new(&config.mqtt.host, config.mqtt.port)

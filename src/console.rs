@@ -175,7 +175,7 @@ impl Console {
         debug!("Received OSC message: {:20} args={:?}", msg.addr, msg.args);
 
         let addr = msg.addr.clone();
-        let arg = msg.args.first();
+        let arg = if msg.args.len() == 3 { msg.args.last() } else { msg.args.first() };
         // let mut guard = cache.write().await;
 
         if let Some(arg) = arg {
@@ -236,6 +236,7 @@ impl Console {
             }
         }
 
+        debug!("OSC address {} not found in cache, requesting...", osc_addr);
         // If not found in cache, request the value
         self.request_value(osc_addr).await?;
 
@@ -266,6 +267,5 @@ impl Console {
 
     pub async fn set_interface(&mut self, interface: Interface) {
         self.interface.lock().await.replace(interface);
-        // self.interface.replace(interface);
     }
 }

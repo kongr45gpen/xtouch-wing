@@ -7,10 +7,11 @@ use figment::providers;
 use tokio::sync::RwLock;
 
 use crate::console::{self, Value};
-use log::{debug, info};
+use log::{debug, error, info, warn};
 
 pub trait WriteProvider {
     fn write(&self, addr: &str, value: console::Value) -> anyhow::Result<()>;
+    fn set_interface(&self, interface: Interface);
 }
 
 pub struct Orchestrator {
@@ -33,6 +34,7 @@ impl Orchestrator {
 
         for (id, provider) in orchestra.providers.iter().enumerate() {
             let interface = Interface::new(id + 1, orchestra.clone());
+            provider.set_interface(interface);
         }
 
         orchestra
@@ -75,20 +77,23 @@ impl Interface {
         console.get_value(osc_addr).await
     }
 
-    pub async fn set_value(&self, osc_addr: &str, value: console::Value) -> Result<()> {
+    pub async fn set_value(&self, osc_addr: &str, value: console::Value) {
         if self.id != 0 {
             // Write to console which is not part of the provider list
             // TODO: Maybe it should be
             let console = self.orchestrator.console.read().await;
-            console.set_value(osc_addr, value.clone()).await?;
+            if let Err(e) = console.set_value(osc_addr, value.clone()).await {
+                error!("Console failed to write {}: {:?}", osc_addr, e);
+            }
         }
 
         for (id, provider) in self.orchestrator.providers.iter().enumerate() {
             // Do not write to self!
             if id + 1 != self.id {
-                provider.write(osc_addr, value.clone())?;
+                if let Err(e) = provider.write(osc_addr, value.clone()) {
+                    error!("Provider {} failed to write {}: {:?}", id, osc_addr, e);
+                }
             }
         }
-        Ok(())
     }
 }
