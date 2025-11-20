@@ -39,10 +39,7 @@ pub struct Controller {
 unsafe impl Send for Controller {}
 unsafe impl Sync for Controller {}
 
-struct ControllerTempWrapper (*const Controller);
-
-unsafe impl Send for ControllerTempWrapper {}
-unsafe impl Sync for ControllerTempWrapper {}
+static mut DANGEROUS_PTR: * const Controller = std::ptr::null();
 
 impl Controller {
     /// Create a new MIDI controller and initialise connections
@@ -91,13 +88,15 @@ impl Controller {
             banks.push(faders);
         }
 
-        Ok(Self {
+        let result = Ok(Self {
             input: RefCell::new(input_connection),
             output: RefCell::new(output_connection),
             interface: Arc::new(Mutex::new(None)),
             current_bank: 0,
             banks: banks,
-        })
+        });
+
+        result
     }
 
     pub fn process_fader_input(
@@ -362,10 +361,66 @@ impl WriteProvider for Controller {
                 }
             }
         });
+
+        unsafe {
+            // TODO: Hope for the best...
+            DANGEROUS_PTR = &*self;
+        }
     }
 }
 
-fn midi_callback(timestamp_us: u64, message: &[u8], _: &mut ()) {
-    let event = LiveEvent::parse(message);
+fn midi_callback(timestamp_us: u64, bytes: &[u8], _: &mut ()) {
+    // TODO: Hope for the best when recovering pointer
+
+    let event = LiveEvent::parse(bytes);
     debug!("MIDI event at {} us: {:?}", timestamp_us, event);
+
+    unsafe {
+        let controller: &Controller = &*DANGEROUS_PTR;
+
+        match event {
+            Ok(LiveEvent::Midi { channel, message }) => {
+                match message {
+                    midly::MidiMessage::PitchBend { bend } => {
+                        let fader_index = channel.as_int() as usize;
+                        let faders = &controller
+                            .banks
+                            .get(controller.current_bank)
+                            .expect("Current bank not found");
+
+                        if let Some(fader) = faders.get(fader_index) {
+                            let db_value =
+                                Fader::float_to_db((bend.as_f64() + 1.0) / 2.0) as f32;
+
+
+                            let osc_addr = fader.get_osc_path(PathType::Fader);
+                            let interface = controller.interface.clone();
+
+                            // TODO: This is incorrect
+                            let rt = tokio::runtime::Runtime::new().unwrap();
+                            
+                            rt.spawn(async move {
+                                interface.lock().await.as_ref().unwrap().set_value(&osc_addr, Value::Float(db_value)).await;
+                            });
+
+                            // Emit the message back as midi so that the console doesn't complain
+                            controller.output.borrow_mut().send(bytes).unwrap();
+
+                        } else {
+                            warn!("Fader index {} not found in current bank", fader_index);
+                        }
+                    }
+                    other => {
+                        warn!("Unhandled MIDI message: {:?}", other);
+                    }
+                }
+            }
+            Ok(e) => {
+                warn!("I am not equipped to understand this {:?} MIDI event", e);
+            }
+            Err(e) => {
+                warn!("Failed to parse MIDI event: {}", e);
+            }
+        }
+    }
 }
