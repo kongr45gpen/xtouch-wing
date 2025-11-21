@@ -166,13 +166,11 @@ impl Controller {
                 .await
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Interface not set"))?
-                .get_value(&osc_path)
-                .await?;
+                .request_value_notification_checked(&osc_path, false)
+                .await;
 
-            if let Some(value) = value {
-                self.process_osc_input(&osc_path, &value)?;
-            } else {
-                warn!("OSC value for {} not found during bank refresh", osc_path);
+            if let Err(e) = value {
+                warn!("OSC value for {} not found during bank refresh: {}", osc_path, e);
             }
         }
 
