@@ -17,7 +17,7 @@ use midly::io::Write;
 use midly::live::LiveEvent;
 use tokio::sync::Mutex;
 
-use crate::console::Value;
+use crate::orchestrator::Value;
 use crate::data::Fader;
 use crate::data::PathType;
 use crate::orchestrator::Interface;
@@ -133,6 +133,8 @@ impl Controller {
     }
 
     pub fn process_osc_input(&self, osc_addr: &str, value: &Value) -> Result<()> {
+        debug!("Processing OSC input {} = {:?}", osc_addr, value);
+
         let faders = &self
             .banks
             .get(self.current_bank)
@@ -350,7 +352,6 @@ impl WriteProvider for Controller {
             old_interface.lock().await.replace(interface);
             // TODO: Very dangerous, extremely hacky code
             // UNSAFE: There is no excuse for this.
-
 
             unsafe {
                 let controller_ptr: *const Controller = controller_ptr as *const Controller;

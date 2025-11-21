@@ -7,20 +7,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Value types stored in the parameter cache (replaces Fader)
-#[derive(Debug, Clone, PartialEq)]
-pub enum Value {
-    Int(i32),
-    Float(f32),
-    Str(String),
-    Blob(Vec<u8>),
-}
-
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::timeout;
 
-use crate::orchestrator::Interface;
+use crate::orchestrator::{Interface, Value};
 
 /// WING connection and parameter cache
 pub struct Console {
@@ -28,7 +19,6 @@ pub struct Console {
     remote_addr: String,
     /// A list of currently known OSC parameters. This will be kept up to date by the
     /// subscription.
-    pub cache: Arc<RwLock<HashMap<String, Value>>>,
     interface: Arc<Mutex<Option<Interface>>>,
 }
 
@@ -47,12 +37,10 @@ impl Console {
             .await
             .with_context(|| format!("Failed to connect UDP socket to {}", remote_addr))?;
         let socket = Arc::new(socket);
-        let parameter_cache = Arc::new(RwLock::new(HashMap::new()));
 
         let console = Self {
             socket: socket.clone(),
             remote_addr: remote_addr.to_string(),
-            cache: parameter_cache.clone(),
             interface: Mutex::new(None).into(),
         };
 
@@ -130,7 +118,6 @@ impl Console {
     /// and updates the parameter cache.
     fn spawn_recv_task(&self) {
         let socket = self.socket.clone();
-        let cache = self.cache.clone();
         let interface = self.interface.clone();
 
         tokio::spawn(async move {
@@ -140,7 +127,7 @@ impl Console {
                 match socket.recv(&mut buf).await {
                     Ok(size) => {
                         // hand raw UDP bytes to the packet processor (it will decode)
-                        Console::process_packet_bytes(cache.clone(), interface.clone(), &buf[..size]).await;
+                        Console::process_packet_bytes(interface.clone(), &buf[..size]).await;
                     }
                     Err(e) => {
                         warn!("Error receiving OSC packet: {}", e);
@@ -152,12 +139,12 @@ impl Console {
     }
     
     /// Decode raw UDP bytes into OSC packets and update the cache.
-    async fn process_packet_bytes(cache: Arc<RwLock<HashMap<String, Value>>>, interface: Arc<Mutex<Option<Interface>>>, data: &[u8]) {
+    async fn process_packet_bytes(interface: Arc<Mutex<Option<Interface>>>, data: &[u8]) {
         match decoder::decode_udp(data) {
             Ok((_, packet)) => {
                 match packet {
                     OscPacket::Message(msg) => {
-                        Console::handle_message(cache.clone(), interface, msg).await;
+                        Console::handle_message(interface, msg).await;
                     }
                     OscPacket::Bundle(_) => {
                         error!("I am not equipped to handle OSC bundles, I hope they don't show up!");
@@ -171,7 +158,7 @@ impl Console {
     }
 
     /// Handle a single OSC message and update the cache.
-    async fn handle_message(cache: Arc<RwLock<HashMap<String, Value>>>, interface: Arc<Mutex<Option<Interface>>>, msg: OscMessage) {
+    async fn handle_message(interface: Arc<Mutex<Option<Interface>>>, msg: OscMessage) {
         debug!("Received OSC message: {:20} args={:?}", msg.addr, msg.args);
 
         let addr = msg.addr.clone();
@@ -202,7 +189,7 @@ impl Console {
     }
     
     /// Performs a request for an OSC value, without returning it.
-    async fn request_value(&self, osc_addr: &str) -> Result<()> {
+    pub async fn request_value(&self, osc_addr: &str) -> Result<()> {
         let osc_msg = OscPacket::Message(OscMessage {
             addr: osc_addr.to_string(),
             args: vec![],
@@ -210,42 +197,6 @@ impl Console {
         let buf = encoder::encode(&osc_msg).with_context(|| "Failed to encode OSC packet")?;
         self.socket.send(&buf).await?;
         Ok(())
-    }
-
-    /// Performs a request for an OSC value if it is not in the cache.
-    pub async fn ensure_value(&self, osc_addr: &str) -> Result<()> {
-        {
-            let guard = self.cache.read().await;
-            if guard.contains_key(osc_addr) {
-                return Ok(());
-            }
-        }
-
-        // If not found in cache, request the value
-        self.request_value(osc_addr).await?;
-
-        Ok(())
-    }
-
-    /// Get an OSC value
-    pub async fn get_value(&self, osc_addr: &str) -> Result<Option<Value>> {
-        {
-            let guard = self.cache.read().await;
-            if let Some(value) = guard.get(osc_addr) {
-                return Ok(Some(value.clone()));
-            }
-        }
-
-        debug!("OSC address {} not found in cache, requesting...", osc_addr);
-        // If not found in cache, request the value
-        self.request_value(osc_addr).await?;
-
-        // Wait a bit for the response to arrive and be processed
-        // TODO: Ideally we should get a notification from the RX task when this is ready
-        tokio::time::sleep(Duration::from_millis(5)).await;
-
-        let guard = self.cache.read().await;
-        Ok(guard.get(osc_addr).cloned())
     }
 
     /// Set an OSC value
