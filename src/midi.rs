@@ -1,34 +1,32 @@
 //! MIDI controller wrapper for the X-Touch
 
 use core::f32;
-use std::cell::Cell;
-use std::cell::RefCell;
-use std::sync::Arc;
+use std::cell::{Cell, Ref, RefCell};
+use std::sync::{Arc, Weak};
 use std::thread;
 
 use anyhow::anyhow;
-use anyhow::{Context,Result};
-use log::debug;
-use log::info;
-use log::warn;
+use anyhow::{Context, Result};
+use colored::control;
+use log::{debug, error, info, warn};
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use midly::PitchBend;
 use midly::io::Write;
 use midly::live::LiveEvent;
 use tokio::sync::Mutex;
 
-use crate::orchestrator::Value;
 use crate::data::Fader;
 use crate::data::PathType;
 use crate::orchestrator::Interface;
+use crate::orchestrator::Value;
 use crate::orchestrator::WriteProvider;
 use crate::settings::ControllerSettings;
 use crate::settings::MidiDefinition;
 
 /// Simple controller owning a MIDI input and output handle.
 pub struct Controller {
-    pub input: RefCell<MidiInputConnection<()>>,
-    pub output: RefCell<MidiOutputConnection>,
+    pub input: Arc<std::sync::Mutex<MidiInputConnection<Arc<std::sync::Mutex<RefCell<Option<Arc<Mutex<Controller>>>>>>>>>,
+    pub output: Arc<std::sync::Mutex<MidiOutputConnection>>,
 
     interface: Arc<Mutex<Option<Interface>>>,
 
@@ -36,17 +34,14 @@ pub struct Controller {
     banks: Vec<Vec<Fader>>,
 }
 
-unsafe impl Send for Controller {}
-unsafe impl Sync for Controller {}
-
-static mut DANGEROUS_PTR: * const Controller = std::ptr::null();
-
 impl Controller {
     /// Create a new MIDI controller and initialise connections
     pub fn new(
         midi_settings: &ControllerSettings,
         midi_definition: &MidiDefinition,
-    ) -> Result<Self> {
+    ) -> Result<Arc<Mutex<Self>>> {
+        let arcarc = Arc::new(std::sync::Mutex::new(RefCell::new(None)));
+        
         let input_name = &midi_settings.input;
         let output_name = &midi_settings.output;
 
@@ -65,7 +60,7 @@ impl Controller {
             .find(|p| output.port_name(p).ok().as_deref() == Some(&output_name))
             .ok_or_else(|| anyhow::anyhow!("MIDI output port '{}' not found", output_name))?;
 
-        let input_connection = input.connect(input_port, "xtouch-wing-input", midi_callback, ())?;
+        let input_connection = input.connect(input_port, "xtouch-wing-input", midi_callback, arcarc.clone())?;
 
         let output_connection = output.connect(output_port, "xtouch-wing-output")?;
 
@@ -88,13 +83,15 @@ impl Controller {
             banks.push(faders);
         }
 
-        let result = Ok(Self {
-            input: RefCell::new(input_connection),
-            output: RefCell::new(output_connection),
+        let result = Ok(Arc::new(Mutex::new(Self {
+            input: Arc::new(std::sync::Mutex::new(input_connection)),
+            output: Arc::new(std::sync::Mutex::new(output_connection)),
             interface: Arc::new(Mutex::new(None)),
             current_bank: 0,
             banks: banks,
-        });
+        })));
+
+        arcarc.lock().unwrap().replace(Some(result.as_ref().unwrap().clone()));
 
         result
     }
@@ -120,8 +117,10 @@ impl Controller {
                     };
 
                     let mut buf = Vec::with_capacity(3);
-                    ev.write(&mut buf).map_err(|e| anyhow!("MIDI write fail {}", e))?;
-                    self.output.try_borrow_mut()?.send(&buf)?;
+                    ev.write(&mut buf)
+                        .map_err(|e| anyhow!("MIDI write fail {}", e))?;
+                    // synchronous context: use blocking_lock to acquire the Tokio mutex
+                    self.output.lock().unwrap().send(&buf)?;
                 } else {
                     warn!("Expected float value for fader, got {:?}", value);
                 }
@@ -154,14 +153,15 @@ impl Controller {
     async fn refresh_bank(&self) -> Result<()> {
         debug!("Hydrating bank {} buttons & faders", self.current_bank);
 
-        let faders = &self
+        let faders = self
             .banks
             .get(self.current_bank)
             .ok_or_else(|| anyhow::anyhow!("Bank {} not on list", self.current_bank))?;
 
         for (index, fader) in faders.iter().enumerate() {
             let osc_path = fader.get_osc_path(PathType::Fader);
-            let value = self.interface
+            let value = self
+                .interface
                 .lock()
                 .await
                 .as_ref()
@@ -170,7 +170,10 @@ impl Controller {
                 .await;
 
             if let Err(e) = value {
-                warn!("OSC value for {} not found during bank refresh: {}", osc_path, e);
+                warn!(
+                    "OSC value for {} not found during bank refresh: {}",
+                    osc_path, e
+                );
             }
         }
 
@@ -192,11 +195,14 @@ impl Controller {
             .to_vec();
             sysex.extend_from_slice(&message[..max_len.min(message.len())]);
             sysex.push(0xF7);
-            self.output.get_mut().send(&sysex)?;
+            self.output.lock().unwrap().send(&sysex)?;
         }
 
         loop {
             tokio::time::sleep(tokio::time::Duration::from_millis(1000 / 30)).await;
+
+            // Acquire the output lock once for this iteration (do not hold across await)
+            let mut out_guard = self.output.lock().unwrap();
 
             let mut buf = Vec::new();
 
@@ -214,7 +220,7 @@ impl Controller {
 
                 ev.write(&mut buf).unwrap();
                 if faders {
-                    self.output.get_mut().send(&buf)?;
+                    out_guard.send(&buf)?;
                 }
                 buf.clear();
             }
@@ -236,7 +242,7 @@ impl Controller {
                 };
 
                 ev.write(&mut buf).unwrap();
-                self.output.get_mut().send(&buf)?;
+                out_guard.send(&buf)?;
                 buf.clear();
             }
 
@@ -258,7 +264,7 @@ impl Controller {
                 };
 
                 ev.write(&mut buf).unwrap();
-                self.output.get_mut().send(&buf)?;
+                out_guard.send(&buf)?;
                 buf.clear();
             }
 
@@ -280,7 +286,7 @@ impl Controller {
                 };
 
                 ev.write(&mut buf).unwrap();
-                self.output.get_mut().send(&buf)?;
+                out_guard.send(&buf)?;
                 buf.clear();
             }
 
@@ -301,7 +307,7 @@ impl Controller {
                 ];
 
                 // Scribble Strip Colours (sysex)
-                self.output.get_mut().send(&sysex)?;
+                out_guard.send(&sysex)?;
             }
 
             // 7-segment display
@@ -324,7 +330,7 @@ impl Controller {
                 };
 
                 ev.write(&mut buf).unwrap();
-                self.output.get_mut().send(&buf)?;
+                out_guard.send(&buf)?;
                 buf.clear();
             }
 
@@ -335,91 +341,94 @@ impl Controller {
     }
 }
 
-impl WriteProvider for Controller {
+impl WriteProvider for Arc<Mutex<Controller>> {
     fn write(&self, addr: &str, value: Value) -> anyhow::Result<()> {
-        self.process_osc_input(addr, &value)
-    }
-
-    fn set_interface(&self, interface: Interface) {
-        let old_interface = self.interface.clone();
-
-        // TODO: What is this even
-        let controller_ptr = (self as *const Controller) as usize;
+        let controller = self.clone();
+        let addr = addr.to_string();
 
         tokio::task::spawn(async move {
-            old_interface.lock().await.replace(interface);
-            // TODO: Very dangerous, extremely hacky code
-            // UNSAFE: There is no excuse for this.
+            let controller = controller.lock().await;
 
-            unsafe {
-                let controller_ptr: *const Controller = controller_ptr as *const Controller;
-                let controller: &Controller = &*controller_ptr;
-
-                if let Err(e) = controller.refresh_bank().await {
-                    log::error!("Failed to refresh bank on interface set: {}", e);
-                }
+            if let Err(e) = controller.process_osc_input(&addr, &value) {
+                error!("Failed to process OSC input {} = {:?}: {}", addr, value, e);
             }
         });
 
-        unsafe {
-            // TODO: Hope for the best...
-            DANGEROUS_PTR = &*self;
-        }
+        Ok(())
+    }
+
+    fn set_interface(&self, interface: Interface) {
+        let controller = self.clone();
+
+        tokio::task::spawn(async move {
+            let controller = controller.lock().await;
+
+            controller.interface.lock().await.replace(interface);
+
+            if let Err(e) = controller.refresh_bank().await {
+                error!("Failed to refresh bank on interface set: {}", e);
+            }
+        });
     }
 }
 
-fn midi_callback(timestamp_us: u64, bytes: &[u8], _: &mut ()) {
-    // TODO: Hope for the best when recovering pointer
+fn midi_callback(timestamp_us: u64, bytes: &[u8], controller: &mut Arc<std::sync::Mutex<RefCell<Option<Arc<Mutex<Controller>>>>>>) {
+    use std::borrow::Borrow;
 
     let event = LiveEvent::parse(bytes);
     debug!("MIDI event at {} us: {:?}", timestamp_us, event);
 
-    unsafe {
-        let controller: &Controller = &*DANGEROUS_PTR;
+    let controller = match controller.lock().unwrap().get_mut() {
+        Some(c) => c.clone(),
+        None => {
+            error!("MIDI callback called but controller not initialised");
+            return;
+        }
+    };
 
-        match event {
-            Ok(LiveEvent::Midi { channel, message }) => {
-                match message {
-                    midly::MidiMessage::PitchBend { bend } => {
-                        let fader_index = channel.as_int() as usize;
-                        let faders = &controller
-                            .banks
-                            .get(controller.current_bank)
-                            .expect("Current bank not found");
+    let mut controller = controller.blocking_lock();
 
-                        if let Some(fader) = faders.get(fader_index) {
-                            let db_value =
-                                Fader::float_to_db((bend.as_f64() + 1.0) / 2.0) as f32;
+    match event {
+        Ok(LiveEvent::Midi { channel, message }) => {
+            match message {
+                midly::MidiMessage::PitchBend { bend } => {
+                    let fader_index = channel.as_int() as usize;
+                    let faders = &controller
+                        .banks
+                        .get(controller.current_bank)
+                        .expect("Current bank not found");
 
+                    if let Some(fader) = faders.get(fader_index) {
+                        let db_value =
+                            Fader::float_to_db((bend.as_f64() + 1.0) / 2.0) as f32;
 
-                            let osc_addr = fader.get_osc_path(PathType::Fader);
-                            let interface = controller.interface.clone();
+                        let osc_addr = fader.get_osc_path(PathType::Fader);
+                        let interface = controller.interface.clone();
 
-                            // TODO: This is incorrect
-                            let rt = tokio::runtime::Runtime::new().unwrap();
-                            
-                            rt.spawn(async move {
-                                interface.lock().await.as_ref().unwrap().set_value(&osc_addr, Value::Float(db_value)).await;
-                            });
+                        // TODO: This is incorrect
+                        let rt = tokio::runtime::Runtime::new().unwrap();
 
-                            // Emit the message back as midi so that the console doesn't complain
-                            controller.output.borrow_mut().send(bytes).unwrap();
+                        rt.spawn(async move {
+                            interface.lock().await.as_ref().unwrap().set_value(&osc_addr, Value::Float(db_value)).await;
+                        });
 
-                        } else {
-                            warn!("Fader index {} not found in current bank", fader_index);
-                        }
-                    }
-                    other => {
-                        warn!("Unhandled MIDI message: {:?}", other);
+                        // Emit the message back as midi so that the console doesn't complain
+                        controller.output.lock().unwrap().send(bytes).unwrap();
+
+                    } else {
+                        warn!("Fader index {} not found in current bank", fader_index);
                     }
                 }
+                other => {
+                    warn!("Unhandled MIDI message: {:?}", other);
+                }
             }
-            Ok(e) => {
-                warn!("I am not equipped to understand this {:?} MIDI event", e);
-            }
-            Err(e) => {
-                warn!("Failed to parse MIDI event: {}", e);
-            }
+        }
+        Ok(e) => {
+            warn!("I am not equipped to understand this {:?} MIDI event", e);
+        }
+        Err(e) => {
+            warn!("Failed to parse MIDI event: {}", e);
         }
     }
 }
