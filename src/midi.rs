@@ -21,6 +21,108 @@ use crate::orchestrator::{Interface, Value, WriteProvider};
 use crate::settings::{ControllerSettings, MidiDefinition};
 use crate::utils::try_arc_new_cyclic;
 
+pub const ASCII_TO_7SEGMENT: [Option<u8>; 128] = [
+    None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+    None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+    None, None, None, None,
+    Some(0),  // space
+    Some(59), // !
+    Some(39), // "
+    Some(35), // #
+    Some(36), // $
+    Some(37), // %
+    Some(38), // &
+    Some(39), // '
+    Some(40), // (
+    Some(41), // )
+    Some(42), // *
+    Some(43), // +
+    Some(44), // ,
+    Some(45), // -
+    Some(46), // .
+    Some(47), // /
+    Some(48), // 0
+    Some(49), // 1
+    Some(50), // 2
+    Some(51), // 3
+    Some(52), // 4
+    Some(53), // 5
+    Some(54), // 6
+    Some(55), // 7
+    Some(56), // 8
+    Some(57), // 9
+    Some(34), // :
+    Some(59), // ;
+    Some(60), // <
+    Some(61), // =
+    Some(62), // >
+    Some(63), // ?
+    Some(38), // @
+    Some(1),  // A
+    Some(2),  // B
+    Some(3),  // C
+    Some(4),  // D
+    Some(5),  // E
+    Some(6),  // F
+    Some(7),  // G
+    Some(8),  // H
+    Some(9),  // I
+    Some(10), // J
+    Some(11), // K
+    Some(12), // L
+    Some(13), // M
+    Some(14), // N
+    Some(15), // O
+    Some(16), // P
+    Some(17), // Q
+    Some(18), // R
+    Some(19), // S
+    Some(20), // T
+    Some(21), // U
+    Some(22), // V
+    Some(23), // W
+    Some(24), // X
+    Some(25), // Y
+    Some(26), // Z
+    Some(27), // [
+    Some(28), // \
+    Some(29), // ]
+    Some(30), // ^
+    Some(31), // _
+    Some(32), // `
+    Some(1),  // a
+    Some(2),  // b
+    Some(3),  // c
+    Some(4),  // d
+    Some(5),  // e
+    Some(6),  // f
+    Some(7),  // g
+    Some(8),  // h
+    Some(9),  // i
+    Some(10), // j
+    Some(11), // k
+    Some(12), // l
+    Some(13), // m
+    Some(14), // n
+    Some(15), // o
+    Some(16), // p
+    Some(17), // q
+    Some(18), // r
+    Some(19), // s
+    Some(20), // t
+    Some(21), // u
+    Some(22), // v
+    Some(23), // w
+    Some(24), // x
+    Some(25), // y
+    Some(26), // z
+    Some(27), // {
+    Some(28), // |
+    Some(29), // }
+    Some(31), // ~
+    Some(0),  // DEL
+];
+
 /// Simple controller owning a MIDI input and output handle.
 pub struct Controller {
     pub input: Arc<std::sync::Mutex<MidiInputConnection<(Weak<Mutex<Controller>>, Handle)>>>,
@@ -30,6 +132,7 @@ pub struct Controller {
 
     current_bank: usize,
     banks: Vec<Vec<Fader>>,
+    bank_names: Vec<Option<String>>,
     buttons: HashMap<u32, InternalButton>,
 }
 
@@ -112,6 +215,12 @@ impl Controller {
                 interface: Arc::new(Mutex::new(None)),
                 current_bank: 0,
                 banks: banks,
+                bank_names: midi_settings
+                    .assignments
+                    .banks
+                    .iter()
+                    .map(|b| b.name.clone())
+                    .collect(),
                 buttons: buttons,
             }))
         })
@@ -198,7 +307,69 @@ impl Controller {
             }
         }
 
+        self.refresh_all_button_leds().await;
+
+        self.write_text_to_main_display(
+            self.bank_names
+                .get(self.current_bank)
+                .and_then(|name| name.as_deref())
+                .unwrap_or(""),
+        ).await;
+
         Ok(())
+    }
+
+    async fn get_function_button_lit(&self, function: &InternalFunction) -> Result<bool> {
+        let mut result: anyhow::Result<_>;
+
+        match function {
+            InternalFunction::NextBank => {
+                result = Ok(self.current_bank + 1 < self.banks.len());
+            },
+            InternalFunction::PreviousBank => {
+                result = Ok(self.current_bank > 0);
+            },
+        }
+
+        result.with_context(|| format!("While checking function LED {:?}", function))
+    }
+
+    async fn refresh_button_led(&self, button: u32) {
+        if let Some(internal_button) = self.buttons.get(&button) {
+            let lit = self.get_function_button_lit(&internal_button.function).await;
+
+            if let Err(e) = lit {
+                warn!("Failed to get button LED state for button {}: {}", button, e);
+                return;
+            }
+
+            let lit = lit.unwrap();
+
+            let midi_value = if lit { 127 } else { 0 };
+
+            let ev = LiveEvent::Midi {
+                channel: 0.into(),
+                message: midly::MidiMessage::NoteOn {
+                    key: (button as u8).into(),
+                    vel: midi_value.into(),
+                },
+            };
+
+            let mut buf = Vec::with_capacity(3);
+            ev.write(&mut buf)
+                .map_err(|e| anyhow!("MIDI write fail {}", e))
+                .unwrap();
+            self.output.lock().unwrap().send(&buf).unwrap();
+        } else {
+            // ...
+        }
+    }
+
+    async fn refresh_all_button_leds(&self) {
+        // TODO: Cache LED status and don't update if not necessary
+        for button in self.buttons.keys() {
+            self.refresh_button_led(*button).await;
+        }
     }
 
     async fn do_function(&mut self, function: InternalFunction) -> Result<()> {
@@ -220,6 +391,48 @@ impl Controller {
         }
 
         result.with_context(|| format!("While executing function {:?}", function))
+    }
+
+    async fn write_text_to_main_display(&self, text: &str) {
+        let display_cc = (64..=75).rev().collect::<Vec<u8>>();
+
+        let text = text.chars().take(display_cc.len()).collect::<String>();
+
+        // An offset to discard the first two characters because they are too far away on
+        // the display
+        let mut text_offset = 2;
+        if text.len() > display_cc.len() - 2 {
+            text_offset = 0;
+        }
+
+        // We iterate over the entire display to clear any digits that may have been left
+        // from before
+        for (i, cc) in display_cc.iter().enumerate() {
+            let index = i.checked_sub(text_offset);
+            let ch = match index {
+                Some(idx) => text.chars().nth(idx).unwrap_or(' '),
+                None => ' ',
+            };
+            let midi_value = ASCII_TO_7SEGMENT
+                .get(ch as usize)
+                .and_then(|v| *v);
+
+            if let Some(midi_value) = midi_value {
+                let ev = LiveEvent::Midi {
+                    channel: 0.into(),
+                    message: midly::MidiMessage::Controller {
+                        controller: display_cc[i].into(),
+                        value: midi_value.into(),
+                    },
+                };
+
+                let mut buf = Vec::with_capacity(3);
+                ev.write(&mut buf).unwrap();
+                if let Err(e) = self.output.lock().unwrap().send(&buf) {
+                    warn!("Failed to write to main display: {}", e);
+                }
+            }
+        }
     }
 
     /// Runs a never-ending Vegas mode test pattern.
@@ -312,7 +525,6 @@ impl Controller {
 
             // Encoders
             // CC 48-55, 56-63
-            // TODO: Investigate patterns. Currently it seems they have 4 patterns (no edge lights) + 4 patterns (with edge lights)
             for encoder in 0..8 {
                 let value =
                     f32::sin(-clk as f32 * 0.02 + encoder as f32 * 0.02 * 2.0 * f32::consts::PI);
