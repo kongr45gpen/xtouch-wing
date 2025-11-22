@@ -1,22 +1,22 @@
 //! Settings/configuration structures and management
-//! 
+//!
 //! Settings can be provided via external YAML file or environment variables
 
 use std::collections::HashMap;
 
-use figment::providers::Format;
 use figment::Figment;
+use figment::providers::Format;
 use log::debug;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)] 
+#[serde(deny_unknown_fields)]
 struct FaderAssignment {
     osc: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)] 
+#[serde(deny_unknown_fields)]
 struct ButtonAssignment {
     osc: String,
 }
@@ -46,7 +46,7 @@ pub(crate) struct ControllerAssignments {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)] 
+#[serde(deny_unknown_fields)]
 pub(crate) struct ControllerSettings {
     pub input: String,
     pub output: String,
@@ -78,14 +78,14 @@ pub(crate) struct MidiDefinition {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)] 
+#[serde(deny_unknown_fields)]
 pub(crate) struct MqttSettings {
     pub host: String,
     pub port: u16,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)] 
+#[serde(deny_unknown_fields)]
 pub(crate) struct Settings {
     pub faders: [FaderAssignment; 8],
     pub master: FaderAssignment,
@@ -131,7 +131,7 @@ impl ControllerAssignments {
                 FaderBank {
                     name: Some("BUS 9-16".to_string()),
                     faders: (9..=16).map(|i| format!("Bus {}", i)).collect(),
-                }, 
+                },
                 FaderBank {
                     name: Some("MAIN".to_string()),
                     faders: (1..=4).map(|i| format!("Main {}", i)).collect(),
@@ -149,11 +149,7 @@ impl ControllerAssignments {
                     faders: (9..=16).map(|i| format!("DCA {}", i)).collect(),
                 },
             ],
-            fader_buttons: vec![ 
-                "Rec".to_string(),
-                "Solo".to_string(),
-                "Mute".to_string(),
-             ],
+            fader_buttons: vec!["Rec".to_string(), "Solo".to_string(), "Mute".to_string()],
             fixed_faders: HashMap::new(),
             fixed_buttons: HashMap::new(),
         }
@@ -164,17 +160,23 @@ impl MidiDefinition {
     /// Example MIDI definition for Behringer X-Touch
     fn x_touch_full() -> Self {
         // TODO: Add touch 104...112
-        let channel_buttons = [ "Rec", "Solo", "Mute", "Select", "Encoder Push" ];
+        let channel_buttons = ["Rec", "Solo", "Mute", "Select", "Encoder Push"];
 
-        let mut faders: Vec<MidiFader> = (0..8).map(|ch| MidiFader {
-            channel: ch,
-            buttons: channel_buttons.iter().enumerate().map(|(btn, &name)| MidiButton {
+        let mut faders: Vec<MidiFader> = (0..8)
+            .map(|ch| MidiFader {
                 channel: ch,
-                key: ch + btn as u8 * 8,
-                description: Some(name.to_string()),
-            }).collect(),
-            description: Some(format!("Channel {}", ch + 1)),
-        }).collect();
+                buttons: channel_buttons
+                    .iter()
+                    .enumerate()
+                    .map(|(btn, &name)| MidiButton {
+                        channel: ch,
+                        key: ch + btn as u8 * 8,
+                        description: Some(name.to_string()),
+                    })
+                    .collect(),
+                description: Some(format!("Channel {}", ch + 1)),
+            })
+            .collect();
 
         faders.push(MidiFader {
             channel: 8.into(),
@@ -184,97 +186,330 @@ impl MidiDefinition {
 
         let buttons = vec![
             // Encoder Assign
-            MidiButton { channel: 0, key: 40, description: Some("Track".to_string()) },
-            MidiButton { channel: 0, key: 42, description: Some("Pan".to_string()) },
-            MidiButton { channel: 0, key: 44, description: Some("EQ".to_string()) },
-            MidiButton { channel: 0, key: 41, description: Some("Send".to_string()) },
-            MidiButton { channel: 0, key: 43, description: Some("Plug-In".to_string()) },
-            MidiButton { channel: 0, key: 45, description: Some("Inst".to_string()) },
-
+            MidiButton {
+                channel: 0,
+                key: 40,
+                description: Some("Track".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 42,
+                description: Some("Pan".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 44,
+                description: Some("EQ".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 41,
+                description: Some("Send".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 43,
+                description: Some("Plug-In".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 45,
+                description: Some("Inst".to_string()),
+            },
             // LCD Display
-            MidiButton { channel: 0, key: 52, description: Some("Name/Value".to_string()) },
-            MidiButton { channel: 0, key: 53, description: Some("SMTPE".to_string()) },
-
+            MidiButton {
+                channel: 0,
+                key: 52,
+                description: Some("Name/Value".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 53,
+                description: Some("SMTPE".to_string()),
+            },
             // Fader Assign
-            MidiButton { channel: 0, key: 51, description: Some("Global View".to_string()) },
-            MidiButton { channel: 0, key: 62, description: Some("MIDI Tracks".to_string()) },
-            MidiButton { channel: 0, key: 63, description: Some("Inputs".to_string()) },
-            MidiButton { channel: 0, key: 64, description: Some("Audio Tracks".to_string()) },
-            MidiButton { channel: 0, key: 65, description: Some("Audio Inst".to_string()) },
-            MidiButton { channel: 0, key: 66, description: Some("Aux".to_string()) },
-            MidiButton { channel: 0, key: 67, description: Some("Buses".to_string()) },
-            MidiButton { channel: 0, key: 68, description: Some("Outputs".to_string()) },
-            MidiButton { channel: 0, key: 69, description: Some("User".to_string()) },
-
+            MidiButton {
+                channel: 0,
+                key: 51,
+                description: Some("Global View".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 62,
+                description: Some("MIDI Tracks".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 63,
+                description: Some("Inputs".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 64,
+                description: Some("Audio Tracks".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 65,
+                description: Some("Audio Inst".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 66,
+                description: Some("Aux".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 67,
+                description: Some("Buses".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 68,
+                description: Some("Outputs".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 69,
+                description: Some("User".to_string()),
+            },
             // Main Fader
-            MidiButton { channel: 0, key: 50, description: Some("Flip".to_string()) },
-
+            MidiButton {
+                channel: 0,
+                key: 50,
+                description: Some("Flip".to_string()),
+            },
             // Function
-            MidiButton { channel: 0, key: 54, description: Some("F1".to_string()) },
-            MidiButton { channel: 0, key: 55, description: Some("F2".to_string()) },
-            MidiButton { channel: 0, key: 56, description: Some("F3".to_string()) },
-            MidiButton { channel: 0, key: 57, description: Some("F4".to_string()) },
-            MidiButton { channel: 0, key: 58, description: Some("F5".to_string()) },
-            MidiButton { channel: 0, key: 59, description: Some("F6".to_string()) },
-            MidiButton { channel: 0, key: 60, description: Some("F7".to_string()) },
-            MidiButton { channel: 0, key: 61, description: Some("F8".to_string()) },
-
+            MidiButton {
+                channel: 0,
+                key: 54,
+                description: Some("F1".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 55,
+                description: Some("F2".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 56,
+                description: Some("F3".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 57,
+                description: Some("F4".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 58,
+                description: Some("F5".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 59,
+                description: Some("F6".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 60,
+                description: Some("F7".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 61,
+                description: Some("F8".to_string()),
+            },
             // Modify
-            MidiButton { channel: 0, key: 70, description: Some("Shift".to_string()) },
-            MidiButton { channel: 0, key: 71, description: Some("Option".to_string()) },
-            MidiButton { channel: 0, key: 72, description: Some("Ctrl".to_string()) },
-            MidiButton { channel: 0, key: 73, description: Some("Alt".to_string()) },
-
+            MidiButton {
+                channel: 0,
+                key: 70,
+                description: Some("Shift".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 71,
+                description: Some("Option".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 72,
+                description: Some("Ctrl".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 73,
+                description: Some("Alt".to_string()),
+            },
             // Automation
-            MidiButton { channel: 0, key: 74, description: Some("Read/Off".to_string()) },
-            MidiButton { channel: 0, key: 75, description: Some("Write".to_string()) },
-            MidiButton { channel: 0, key: 76, description: Some("Trim".to_string()) },
-            MidiButton { channel: 0, key: 77, description: Some("Touch".to_string()) },
-            MidiButton { channel: 0, key: 78, description: Some("Latch".to_string()) },
-            MidiButton { channel: 0, key: 79, description: Some("Group".to_string()) },
-
+            MidiButton {
+                channel: 0,
+                key: 74,
+                description: Some("Read/Off".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 75,
+                description: Some("Write".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 76,
+                description: Some("Trim".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 77,
+                description: Some("Touch".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 78,
+                description: Some("Latch".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 79,
+                description: Some("Group".to_string()),
+            },
             // Utility
-            MidiButton { channel: 0, key: 80, description: Some("Save".to_string()) },
-            MidiButton { channel: 0, key: 81, description: Some("Undo".to_string()) },
-            MidiButton { channel: 0, key: 82, description: Some("Cancel".to_string()) },
-            MidiButton { channel: 0, key: 83, description: Some("Enter".to_string()) },
-
+            MidiButton {
+                channel: 0,
+                key: 80,
+                description: Some("Save".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 81,
+                description: Some("Undo".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 82,
+                description: Some("Cancel".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 83,
+                description: Some("Enter".to_string()),
+            },
             // Transport
-            MidiButton { channel: 0, key: 84, description: Some("Marker".to_string()) },
-            MidiButton { channel: 0, key: 85, description: Some("Nudge".to_string()) },
-            MidiButton { channel: 0, key: 86, description: Some("Cycle".to_string()) },
-            MidiButton { channel: 0, key: 87, description: Some("Drop".to_string()) },
-            MidiButton { channel: 0, key: 88, description: Some("Replace".to_string()) },
-            MidiButton { channel: 0, key: 89, description: Some("Click".to_string()) },
-            MidiButton { channel: 0, key: 90, description: Some("Solo".to_string()) },
-
-            MidiButton { channel: 0, key: 91, description: Some("Rewind".to_string()) },
-            MidiButton { channel: 0, key: 92, description: Some("Forward".to_string()) },
-            MidiButton { channel: 0, key: 93, description: Some("Stop".to_string()) },
-            MidiButton { channel: 0, key: 94, description: Some("Play".to_string()) },
-            MidiButton { channel: 0, key: 95, description: Some("Record".to_string()) },
-
+            MidiButton {
+                channel: 0,
+                key: 84,
+                description: Some("Marker".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 85,
+                description: Some("Nudge".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 86,
+                description: Some("Cycle".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 87,
+                description: Some("Drop".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 88,
+                description: Some("Replace".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 89,
+                description: Some("Click".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 90,
+                description: Some("Solo".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 91,
+                description: Some("Rewind".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 92,
+                description: Some("Forward".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 93,
+                description: Some("Stop".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 94,
+                description: Some("Play".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 95,
+                description: Some("Record".to_string()),
+            },
             // Fader Bank
-            MidiButton { channel: 0, key: 46, description: Some("Bank Left".to_string()) },
-            MidiButton { channel: 0, key: 47, description: Some("Bank Right".to_string()) },
-
+            MidiButton {
+                channel: 0,
+                key: 46,
+                description: Some("Bank Left".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 47,
+                description: Some("Bank Right".to_string()),
+            },
             // Channel
-            MidiButton { channel: 0, key: 48, description: Some("Channel Left".to_string()) },
-            MidiButton { channel: 0, key: 49, description: Some("Channel Right".to_string()) },
-
+            MidiButton {
+                channel: 0,
+                key: 48,
+                description: Some("Channel Left".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 49,
+                description: Some("Channel Right".to_string()),
+            },
             // Navigation
-            MidiButton { channel: 0, key: 96, description: Some("Up".to_string()) },
-            MidiButton { channel: 0, key: 97, description: Some("Down".to_string()) },
-            MidiButton { channel: 0, key: 98, description: Some("Left".to_string()) },
-            MidiButton { channel: 0, key: 99, description: Some("Right".to_string()) },
-            MidiButton { channel: 0, key: 100, description: Some("Enter".to_string()) },
-            MidiButton { channel: 0, key: 101, description: Some("Scrub".to_string()) },
+            MidiButton {
+                channel: 0,
+                key: 96,
+                description: Some("Up".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 97,
+                description: Some("Down".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 98,
+                description: Some("Left".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 99,
+                description: Some("Right".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 100,
+                description: Some("Enter".to_string()),
+            },
+            MidiButton {
+                channel: 0,
+                key: 101,
+                description: Some("Scrub".to_string()),
+            },
         ];
 
-        MidiDefinition {
-            faders,
-            buttons,
-        }
+        MidiDefinition { faders, buttons }
     }
 }
 
@@ -282,16 +517,34 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             faders: [
-                FaderAssignment { osc: "ch.1.fdr".to_string() },
-                FaderAssignment { osc: "ch.2.fdr".to_string() },
-                FaderAssignment { osc: "ch.3.fdr".to_string() },
-                FaderAssignment { osc: "ch.4.fdr".to_string() },
-                FaderAssignment { osc: "ch.5.fdr".to_string() },
-                FaderAssignment { osc: "ch.6.fdr".to_string() },
-                FaderAssignment { osc: "ch.7.fdr".to_string() },
-                FaderAssignment { osc: "ch.8.fdr".to_string() },
+                FaderAssignment {
+                    osc: "ch.1.fdr".to_string(),
+                },
+                FaderAssignment {
+                    osc: "ch.2.fdr".to_string(),
+                },
+                FaderAssignment {
+                    osc: "ch.3.fdr".to_string(),
+                },
+                FaderAssignment {
+                    osc: "ch.4.fdr".to_string(),
+                },
+                FaderAssignment {
+                    osc: "ch.5.fdr".to_string(),
+                },
+                FaderAssignment {
+                    osc: "ch.6.fdr".to_string(),
+                },
+                FaderAssignment {
+                    osc: "ch.7.fdr".to_string(),
+                },
+                FaderAssignment {
+                    osc: "ch.8.fdr".to_string(),
+                },
             ],
-            master: FaderAssignment { osc: "dca.1.fdr".to_string() },
+            master: FaderAssignment {
+                osc: "dca.1.fdr".to_string(),
+            },
             console: ConsoleSettings {
                 ip: "127.0.0.1".to_string(),
                 port: 2223,

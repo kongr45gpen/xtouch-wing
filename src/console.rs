@@ -1,12 +1,12 @@
 //! WING Console Interface
 
-use anyhow::{Context, Result, bail};
-use log::{debug, error, info, warn};
-use rosc::{OscMessage, OscPacket, OscType, decoder, encoder};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::{Context, Result, bail};
+use log::{debug, error, info, warn};
+use rosc::{OscMessage, OscPacket, OscType, decoder, encoder};
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::timeout;
@@ -137,20 +137,18 @@ impl Console {
             }
         });
     }
-    
+
     /// Decode raw UDP bytes into OSC packets and update the cache.
     async fn process_packet_bytes(interface: Arc<Mutex<Option<Interface>>>, data: &[u8]) {
         match decoder::decode_udp(data) {
-            Ok((_, packet)) => {
-                match packet {
-                    OscPacket::Message(msg) => {
-                        Console::handle_message(interface, msg).await;
-                    }
-                    OscPacket::Bundle(_) => {
-                        error!("I am not equipped to handle OSC bundles, I hope they don't show up!");
-                    }
+            Ok((_, packet)) => match packet {
+                OscPacket::Message(msg) => {
+                    Console::handle_message(interface, msg).await;
                 }
-            }
+                OscPacket::Bundle(_) => {
+                    error!("I am not equipped to handle OSC bundles, I hope they don't show up!");
+                }
+            },
             Err(e) => {
                 warn!("Failed to decode incoming OSC packet: {}", e);
             }
@@ -162,11 +160,15 @@ impl Console {
         debug!("Received OSC message: {:20} args={:?}", msg.addr, msg.args);
 
         let addr = msg.addr.clone();
-        let arg = if msg.args.len() == 3 { msg.args.last() } else { msg.args.first() };
+        let arg = if msg.args.len() == 3 {
+            msg.args.last()
+        } else {
+            msg.args.first()
+        };
         // let mut guard = cache.write().await;
 
         if let Some(arg) = arg {
-            let value =  match arg {
+            let value = match arg {
                 OscType::Float(f) => Value::Float(*f),
                 OscType::Int(i) => Value::Int(*i),
                 OscType::String(s) => Value::Str(s.clone()),
@@ -187,7 +189,7 @@ impl Console {
             warn!("OSC message {} has no arguments", msg.addr);
         }
     }
-    
+
     /// Performs a request for an OSC value, without returning it.
     pub async fn request_value(&self, osc_addr: &str) -> Result<()> {
         let osc_msg = OscPacket::Message(OscMessage {

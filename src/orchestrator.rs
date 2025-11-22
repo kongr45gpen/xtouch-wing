@@ -1,15 +1,15 @@
 //! The orchestrator module is responsible for synchronising values across various providers
 
-use std::{collections::HashMap, fmt::Debug, sync::Arc, time::Duration};
+use std::collections::HashMap;
+use std::fmt::Debug;
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Ok, Result, anyhow};
 use figment::providers;
-use tokio::{
-    sync::{Notify, RwLock},
-    time::timeout,
-};
-
 use log::{debug, error, info, warn};
+use tokio::sync::{Notify, RwLock};
+use tokio::time::timeout;
 
 use crate::console::Console;
 
@@ -113,7 +113,6 @@ impl Orchestrator {
                 return value.clone();
             }
         }
-
     }
 
     /// Notify a provider for a value update
@@ -128,13 +127,21 @@ impl Orchestrator {
             let provider = match self.providers.get(provider_id - 1) {
                 Some(p) => p,
                 None => {
-                    error!("Tried to notify unknown provider {} for OSC update", provider_id);
+                    error!(
+                        "Tried to notify unknown provider {} for OSC update",
+                        provider_id
+                    );
                     return;
                 }
             };
 
             if let Err(e) = provider.write(osc_addr, value.clone()) {
-                error!("Provider {} failed to write {}: {:?}", provider_id - 1, osc_addr, e);
+                error!(
+                    "Provider {} failed to write {}: {:?}",
+                    provider_id - 1,
+                    osc_addr,
+                    e
+                );
             }
         }
     }
@@ -182,11 +189,7 @@ impl Interface {
     /// Get an OSC value, requesting it from the console if necessary.
     /// This may generate a notification that will be sent to the caller.
     /// Results to an error in case of a timeout.
-    pub async fn get_value(
-        &self,
-        osc_addr: &str,
-        force_refresh: bool,
-    ) -> Result<Value> {
+    pub async fn get_value(&self, osc_addr: &str, force_refresh: bool) -> Result<Value> {
         let future = self.orchestrator.wait_for_value(osc_addr, force_refresh);
 
         timeout(OSC_TIMEOUT, future)
@@ -203,13 +206,19 @@ impl Interface {
         } else {
             // If the value is in the cache, send an explicit notification
             let value = self.orchestrator.get_cached_value(osc_addr).unwrap();
-            self.orchestrator.notify_provider_by_id(self.id, osc_addr, &value).await;
+            self.orchestrator
+                .notify_provider_by_id(self.id, osc_addr, &value)
+                .await;
         }
     }
 
     /// Request a value notification that contains an OSC value.
     /// This function will wait a bit to ensure the value is available, returning an error otherwise.
-    pub async fn request_value_notification_checked(&self, osc_addr: &str, force_refresh: bool) -> Result<()> {
+    pub async fn request_value_notification_checked(
+        &self,
+        osc_addr: &str,
+        force_refresh: bool,
+    ) -> Result<()> {
         if force_refresh || !self.orchestrator.value_exists_in_cache(osc_addr).await {
             // Requesting the value from the console will generate a notification
             let future = self.orchestrator.wait_for_value(osc_addr, force_refresh);
@@ -221,7 +230,9 @@ impl Interface {
         } else {
             // If the value is in the cache, send an explicit notification
             let value = self.orchestrator.get_cached_value(osc_addr).unwrap();
-            self.orchestrator.notify_provider_by_id(self.id, osc_addr, &value).await;
+            self.orchestrator
+                .notify_provider_by_id(self.id, osc_addr, &value)
+                .await;
             Ok(())
         }
     }

@@ -1,8 +1,9 @@
-use std::{mem::MaybeUninit, sync::{Arc, Weak}};
+use std::mem::MaybeUninit;
+use std::sync::{Arc, Weak};
 
 /// Construct a new `Arc<T>` while giving a `Weak<T>` to an allocation function.
 /// The allocation function can fail with `E` and the error will be propagated.
-/// 
+///
 /// Source: https://github.com/multiversx/rc-new-cyclic-fallible/blob/main/src/rc_new_cyclic_fallible.rs
 /// Author: (c) Andrei Marinica multiversx
 /// Licensed under GPL-3.0

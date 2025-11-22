@@ -1,12 +1,10 @@
 use std::time::Duration;
 
+use log::{debug, error};
 use rumqttc::{AsyncClient, MqttOptions};
-use tokio::{task,time};
-use log::{debug,error};
+use tokio::{task, time};
 
-pub struct Mqtt {
-
-}
+pub struct Mqtt {}
 
 impl Mqtt {
     pub async fn new(remote_host: &str, remote_port: u16) -> anyhow::Result<Self> {
@@ -47,19 +45,35 @@ impl Mqtt {
                 "qos": 2
             }"#;
 
-            let result = client.publish("homeassistant/device/xtouchwing/config", rumqttc::QoS::AtLeastOnce, true, payload).await;
+            let result = client
+                .publish(
+                    "homeassistant/device/xtouchwing/config",
+                    rumqttc::QoS::AtLeastOnce,
+                    true,
+                    payload,
+                )
+                .await;
 
             if let Err(e) = result {
                 error!("Failed to publish MQTT config: {:?}", e);
             }
 
-            let result = client.publish("xtouchwing/state", rumqttc::QoS::AtLeastOnce, false, r#"{ "main_volume": 50 }"#).await;
+            let result = client
+                .publish(
+                    "xtouchwing/state",
+                    rumqttc::QoS::AtLeastOnce,
+                    false,
+                    r#"{ "main_volume": 50 }"#,
+                )
+                .await;
 
             if let Err(e) = result {
                 error!("Failed to publish MQTT config: {:?}", e);
             }
 
-            let result = client.subscribe("xtouchwing/command", rumqttc::QoS::ExactlyOnce).await;
+            let result = client
+                .subscribe("xtouchwing/command", rumqttc::QoS::ExactlyOnce)
+                .await;
 
             if let Err(e) = result {
                 error!("Failed to subscribe to MQTT command topic: {:?}", e);
@@ -68,24 +82,22 @@ impl Mqtt {
             loop {
                 debug!("MQTT in your loop");
                 while let Ok(notification) = eventloop.poll().await {
-                   println!("Received = {:?} = {:?}", 1, notification);
+                    println!("Received = {:?} = {:?}", 1, notification);
 
-                   if let rumqttc::Event::Incoming(incoming) = notification {
-                       debug!("Received MQTT message on topic '{}': {:?}", 1, incoming);
+                    if let rumqttc::Event::Incoming(incoming) = notification {
+                        debug!("Received MQTT message on topic '{}': {:?}", 1, incoming);
 
-                       if let rumqttc::Packet::Publish(publish) = incoming {
-                           let topic = publish.topic;
-                           let payload = String::from_utf8_lossy(&publish.payload);
+                        if let rumqttc::Packet::Publish(publish) = incoming {
+                            let topic = publish.topic;
+                            let payload = String::from_utf8_lossy(&publish.payload);
 
-                           debug!("MQTT Publish received on topic '{}': {}", topic, payload);
-                       }
-                   }
+                            debug!("MQTT Publish received on topic '{}': {}", topic, payload);
+                        }
+                    }
                 }
             }
         });
 
-        Ok(Self {
-
-        })
+        Ok(Self {})
     }
 }

@@ -5,8 +5,7 @@ use std::cell::{Cell, Ref, RefCell};
 use std::sync::{Arc, Weak};
 use std::thread;
 
-use anyhow::anyhow;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use colored::control;
 use log::{debug, error, info, warn};
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
@@ -16,13 +15,9 @@ use midly::live::LiveEvent;
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 
-use crate::data::Fader;
-use crate::data::PathType;
-use crate::orchestrator::Interface;
-use crate::orchestrator::Value;
-use crate::orchestrator::WriteProvider;
-use crate::settings::ControllerSettings;
-use crate::settings::MidiDefinition;
+use crate::data::{Fader, PathType};
+use crate::orchestrator::{Interface, Value, WriteProvider};
+use crate::settings::{ControllerSettings, MidiDefinition};
 use crate::utils::try_arc_new_cyclic;
 
 /// Simple controller owning a MIDI input and output handle.
