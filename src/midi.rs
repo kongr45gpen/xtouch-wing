@@ -13,6 +13,7 @@ use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use midly::PitchBend;
 use midly::io::Write;
 use midly::live::LiveEvent;
+use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 
 use crate::data::Fader;
@@ -26,7 +27,7 @@ use crate::utils::try_arc_new_cyclic;
 
 /// Simple controller owning a MIDI input and output handle.
 pub struct Controller {
-    pub input: Arc<std::sync::Mutex<MidiInputConnection<Weak<Mutex<Controller>>>>>,
+    pub input: Arc<std::sync::Mutex<MidiInputConnection<(Weak<Mutex<Controller>>, Handle)>>>,
     pub output: Arc<std::sync::Mutex<MidiOutputConnection>>,
 
     interface: Arc<Mutex<Option<Interface>>>,
@@ -60,7 +61,12 @@ impl Controller {
                 .find(|p| output.port_name(p).ok().as_deref() == Some(&output_name))
                 .ok_or_else(|| anyhow::anyhow!("MIDI output port '{}' not found", output_name))?;
 
-            let input_connection = input.connect(input_port, "xtouch-wing-input", midi_callback, weak.clone())?;
+            let input_connection = input.connect(
+                input_port,
+                "xtouch-wing-input",
+                midi_callback,
+                (weak.clone(), Handle::current()),
+            )?;
 
             let output_connection = output.connect(output_port, "xtouch-wing-output")?;
 
@@ -75,8 +81,9 @@ impl Controller {
                     .faders
                     .iter()
                     .map(|label| {
-                        Fader::new_from_label(label)
-                            .with_context(|| format!("Failed to create fader from label '{}'", label))
+                        Fader::new_from_label(label).with_context(|| {
+                            format!("Failed to create fader from label '{}'", label)
+                        })
                     })
                     .collect::<Result<Vec<Fader>>>()?;
 
@@ -369,9 +376,11 @@ impl WriteProvider for Arc<Mutex<Controller>> {
     }
 }
 
-fn midi_callback(_timestamp_us: u64, bytes: &[u8], controller: &mut Weak<Mutex<Controller>>) {
+fn midi_callback(_timestamp_us: u64, bytes: &[u8], input: &mut (Weak<Mutex<Controller>>, Handle)) {
     let event = LiveEvent::parse(bytes);
     debug!("MIDI event: {:?}", event);
+
+    let (controller, handle) = input;
 
     let controller = match controller.upgrade() {
         Some(c) => c,
@@ -394,22 +403,23 @@ fn midi_callback(_timestamp_us: u64, bytes: &[u8], controller: &mut Weak<Mutex<C
                         .expect("Current bank not found");
 
                     if let Some(fader) = faders.get(fader_index) {
-                        let db_value =
-                            Fader::float_to_db((bend.as_f64() + 1.0) / 2.0) as f32;
+                        let db_value = Fader::float_to_db((bend.as_f64() + 1.0) / 2.0) as f32;
 
                         let osc_addr = fader.get_osc_path(PathType::Fader);
                         let interface = controller.interface.clone();
 
-                        // TODO: This is incorrect
-                        let rt = tokio::runtime::Runtime::new().unwrap();
-
-                        rt.spawn(async move {
-                            interface.lock().await.as_ref().unwrap().set_value(&osc_addr, Value::Float(db_value)).await;
+                        handle.spawn(async move {
+                            interface
+                                .lock()
+                                .await
+                                .as_ref()
+                                .unwrap()
+                                .set_value(&osc_addr, Value::Float(db_value))
+                                .await;
                         });
 
                         // Emit the message back as midi so that the console doesn't complain
                         controller.output.lock().unwrap().send(bytes).unwrap();
-
                     } else {
                         warn!("Fader index {} not found in current bank", fader_index);
                     }

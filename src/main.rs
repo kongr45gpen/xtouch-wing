@@ -81,8 +81,7 @@ async fn main() -> Result<()> {
 
     let mut orchestrator = orchestrator::Orchestrator::new(console, vec![midi_arc]).await;
 
-    // TODO: Use a proper runtime, wait until all tasks are complete
-    tokio::time::sleep(tokio::time::Duration::from_secs(6000)).await;
+    std::future::pending::<()>().await;
 
-    Ok(())
+    unreachable!()
 }
