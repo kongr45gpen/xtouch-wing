@@ -21,7 +21,7 @@ use crate::orchestrator::{Interface, Value, WriteProvider};
 use crate::settings::{ControllerSettings, MidiDefinition};
 use crate::utils::try_arc_new_cyclic;
 
-pub const ASCII_TO_7SEGMENT: [Option<u8>; 128] = [
+const ASCII_TO_7SEGMENT: [Option<u8>; 128] = [
     None, None, None, None, None, None, None, None, None, None, None, None, None, None,
     None, None, None, None, None, None, None, None, None, None, None, None, None, None,
     None, None, None, None,
@@ -123,6 +123,10 @@ pub const ASCII_TO_7SEGMENT: [Option<u8>; 128] = [
     Some(0),  // DEL
 ];
 
+const WING_TO_XTOUCH_COLOR: [u8; 12] = [
+    7, 6, 4, 7, 2, 2, 3, 3, 1, 1, 5, 5
+];
+
 /// Simple controller owning a MIDI input and output handle.
 pub struct Controller {
     pub input: Arc<std::sync::Mutex<MidiInputConnection<(Weak<Mutex<Controller>>, Handle)>>>,
@@ -134,6 +138,8 @@ pub struct Controller {
     banks: Vec<Vec<Fader>>,
     bank_names: Vec<Option<String>>,
     buttons: HashMap<u32, InternalButton>,
+
+    cached_colours: [u8; 8],
 }
 
 impl Controller {
@@ -222,12 +228,13 @@ impl Controller {
                     .map(|b| b.name.clone())
                     .collect(),
                 buttons: buttons,
+                cached_colours: [7; _],
             }))
         })
     }
 
     pub fn process_fader_input(
-        &self,
+        &mut self,
         fader_index: usize,
         fader: &Fader,
         path: PathType,
@@ -255,13 +262,42 @@ impl Controller {
                     warn!("Expected float value for fader, got {:?}", value);
                 }
             }
+            PathType::ScribbleColour => {
+                if let Value::Int(color_index) = value {
+                    debug!("Setting fader {} scribble colour to index {}", fader_index, color_index);
+                    let wing_color = WING_TO_XTOUCH_COLOR
+                        .get(*color_index as usize)
+                        .copied()
+                        .unwrap_or(7);
+
+                    self.cached_colours[fader_index] = wing_color;
+
+                    // TODO: Use function that already exists
+                    let sysex = [
+                        0xF0, 0x00, 0x00, 0x66, 0x14, 0x72,
+                        self.cached_colours[0],
+                        self.cached_colours[1],
+                        self.cached_colours[2],
+                        self.cached_colours[3],
+                        self.cached_colours[4],
+                        self.cached_colours[5],
+                        self.cached_colours[6],
+                        self.cached_colours[7],
+                        0xF7,
+                    ];
+
+                    self.output.lock().unwrap().send(&sysex)?;
+                } else {
+                    warn!("Expected int value for scribble colour, got {:?}", value);
+                }
+            }
             _ => {}
         }
 
         Ok(())
     }
 
-    pub fn process_osc_input(&self, osc_addr: &str, value: &Value) -> Result<()> {
+    pub fn process_osc_input(&mut self, osc_addr: &str, value: &Value) -> Result<()> {
         debug!("Processing OSC input {} = {:?}", osc_addr, value);
 
         let faders = &self
@@ -288,14 +324,18 @@ impl Controller {
             .get(self.current_bank)
             .ok_or_else(|| anyhow::anyhow!("Bank {} not on list", self.current_bank))?;
 
-        for (index, fader) in faders.iter().enumerate() {
-            let osc_path = fader.get_osc_path(PathType::Fader);
-            let value = self
+        let interface_guard = self
                 .interface
                 .lock()
-                .await
+                .await;
+        let interface = interface_guard
                 .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("Interface not set"))?
+                .ok_or_else(|| anyhow::anyhow!("Interface not set"))?;
+
+        for (index, fader) in faders.iter().enumerate() {
+            let osc_path = fader.get_osc_path(PathType::Fader);
+
+            let value = interface
                 .request_value_notification_checked(&osc_path, false)
                 .await;
 
@@ -305,6 +345,10 @@ impl Controller {
                     osc_path, e
                 );
             }
+
+            interface
+                .request_value_notification(&fader.get_osc_path(PathType::ScribbleColour), false)
+                .await;
         }
 
         self.refresh_all_button_leds().await;
@@ -369,6 +413,22 @@ impl Controller {
         // TODO: Cache LED status and don't update if not necessary
         for button in self.buttons.keys() {
             self.refresh_button_led(*button).await;
+        }
+    }
+
+    /// Send the current colours, as stored in the cache, to the controller. This does not
+    /// update or request OSC values.
+    async fn send_colours(&self) {
+        let c = &self.cached_colours;
+
+        let sysex = [
+            0xF0, 0x00, 0x00, 0x66, 0x14, 0x72,
+            c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7],
+            0xF7,
+        ];
+
+        if let Err(e) = self.output.lock().unwrap().send(&sysex) {
+            warn!("Failed to send colour sysex: {}", e);
         }
     }
 
@@ -601,7 +661,7 @@ impl WriteProvider for Arc<Mutex<Controller>> {
         let addr = addr.to_string();
 
         tokio::task::spawn(async move {
-            let controller = controller.lock().await;
+            let mut controller = controller.lock().await;
 
             if let Err(e) = controller.process_osc_input(&addr, &value) {
                 error!("Failed to process OSC input {} = {:?}: {}", addr, value, e);
