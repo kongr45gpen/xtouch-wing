@@ -81,7 +81,14 @@ impl Fader {
         const BETA: f64 = 10.0;
         const DELTA: f64 = -144.0;
 
-        BETA * ( value.log(GAMMA) + 1.0)
+        let db = BETA * ( value.log(GAMMA) + 1.0);
+
+        // Optional detent
+        if db.abs() <= 0.3 {
+            return 0.0;
+        }
+
+        db
     }
 
     pub fn new_from_label(label: &str) -> Result<Self> {

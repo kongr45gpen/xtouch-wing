@@ -17,6 +17,7 @@ mod midi;
 mod mqtt;
 mod orchestrator;
 mod settings;
+mod utils;
 
 /// XTouch Wing - Command line options
 #[derive(Parser, Debug)]

@@ -22,10 +22,11 @@ use crate::orchestrator::Value;
 use crate::orchestrator::WriteProvider;
 use crate::settings::ControllerSettings;
 use crate::settings::MidiDefinition;
+use crate::utils::try_arc_new_cyclic;
 
 /// Simple controller owning a MIDI input and output handle.
 pub struct Controller {
-    pub input: Arc<std::sync::Mutex<MidiInputConnection<Arc<std::sync::Mutex<RefCell<Option<Arc<Mutex<Controller>>>>>>>>>,
+    pub input: Arc<std::sync::Mutex<MidiInputConnection<Weak<Mutex<Controller>>>>>,
     pub output: Arc<std::sync::Mutex<MidiOutputConnection>>,
 
     interface: Arc<Mutex<Option<Interface>>>,
@@ -40,60 +41,56 @@ impl Controller {
         midi_settings: &ControllerSettings,
         midi_definition: &MidiDefinition,
     ) -> Result<Arc<Mutex<Self>>> {
-        let arcarc = Arc::new(std::sync::Mutex::new(RefCell::new(None)));
-        
-        let input_name = &midi_settings.input;
-        let output_name = &midi_settings.output;
+        try_arc_new_cyclic(|weak| {
+            let input_name = &midi_settings.input;
+            let output_name = &midi_settings.output;
 
-        let input = MidiInput::new("X-Touch Wing IN")?;
-        let output = MidiOutput::new("X-Touch Wing OUT")?;
+            let input = MidiInput::new("X-Touch Wing IN")?;
+            let output = MidiOutput::new("X-Touch Wing OUT")?;
 
-        let ports = input.ports();
-        let input_port = ports
-            .iter()
-            .find(|p| input.port_name(p).ok().as_deref() == Some(&input_name))
-            .ok_or_else(|| anyhow::anyhow!("MIDI input port '{}' not found", input_name))?;
-
-        let ports = output.ports();
-        let output_port = ports
-            .iter()
-            .find(|p| output.port_name(p).ok().as_deref() == Some(&output_name))
-            .ok_or_else(|| anyhow::anyhow!("MIDI output port '{}' not found", output_name))?;
-
-        let input_connection = input.connect(input_port, "xtouch-wing-input", midi_callback, arcarc.clone())?;
-
-        let output_connection = output.connect(output_port, "xtouch-wing-output")?;
-
-        info!(
-            "MIDI input '{}' and output '{}' connected",
-            input_name, output_name
-        );
-
-        let mut banks = Vec::new();
-        for bank in &midi_settings.assignments.banks {
-            let faders = bank
-                .faders
+            let ports = input.ports();
+            let input_port = ports
                 .iter()
-                .map(|label| {
-                    Fader::new_from_label(label)
-                        .with_context(|| format!("Failed to create fader from label '{}'", label))
-                })
-                .collect::<Result<Vec<Fader>>>()?;
+                .find(|p| input.port_name(p).ok().as_deref() == Some(&input_name))
+                .ok_or_else(|| anyhow::anyhow!("MIDI input port '{}' not found", input_name))?;
 
-            banks.push(faders);
-        }
+            let ports = output.ports();
+            let output_port = ports
+                .iter()
+                .find(|p| output.port_name(p).ok().as_deref() == Some(&output_name))
+                .ok_or_else(|| anyhow::anyhow!("MIDI output port '{}' not found", output_name))?;
 
-        let result = Ok(Arc::new(Mutex::new(Self {
-            input: Arc::new(std::sync::Mutex::new(input_connection)),
-            output: Arc::new(std::sync::Mutex::new(output_connection)),
-            interface: Arc::new(Mutex::new(None)),
-            current_bank: 0,
-            banks: banks,
-        })));
+            let input_connection = input.connect(input_port, "xtouch-wing-input", midi_callback, weak.clone())?;
 
-        arcarc.lock().unwrap().replace(Some(result.as_ref().unwrap().clone()));
+            let output_connection = output.connect(output_port, "xtouch-wing-output")?;
 
-        result
+            info!(
+                "MIDI input '{}' and output '{}' connected",
+                input_name, output_name
+            );
+
+            let mut banks = Vec::new();
+            for bank in &midi_settings.assignments.banks {
+                let faders = bank
+                    .faders
+                    .iter()
+                    .map(|label| {
+                        Fader::new_from_label(label)
+                            .with_context(|| format!("Failed to create fader from label '{}'", label))
+                    })
+                    .collect::<Result<Vec<Fader>>>()?;
+
+                banks.push(faders);
+            }
+
+            Ok(Mutex::new(Self {
+                input: Arc::new(std::sync::Mutex::new(input_connection)),
+                output: Arc::new(std::sync::Mutex::new(output_connection)),
+                interface: Arc::new(Mutex::new(None)),
+                current_bank: 0,
+                banks: banks,
+            }))
+        })
     }
 
     pub fn process_fader_input(
@@ -372,14 +369,12 @@ impl WriteProvider for Arc<Mutex<Controller>> {
     }
 }
 
-fn midi_callback(timestamp_us: u64, bytes: &[u8], controller: &mut Arc<std::sync::Mutex<RefCell<Option<Arc<Mutex<Controller>>>>>>) {
-    use std::borrow::Borrow;
-
+fn midi_callback(_timestamp_us: u64, bytes: &[u8], controller: &mut Weak<Mutex<Controller>>) {
     let event = LiveEvent::parse(bytes);
-    debug!("MIDI event at {} us: {:?}", timestamp_us, event);
+    debug!("MIDI event: {:?}", event);
 
-    let controller = match controller.lock().unwrap().get_mut() {
-        Some(c) => c.clone(),
+    let controller = match controller.upgrade() {
+        Some(c) => c,
         None => {
             error!("MIDI callback called but controller not initialised");
             return;
