@@ -77,8 +77,8 @@ impl Orchestrator {
     }
 
     /// Get a value from the OSC cache, or None if it is not cached currently.
-    pub fn get_cached_value(&self, osc_addr: &str) -> Option<Value> {
-        let cache = self.cache.blocking_read();
+    pub async fn get_cached_value(&self, osc_addr: &str) -> Option<Value> {
+        let cache = self.cache.read().await;
         cache.get(osc_addr).cloned()
     }
 
@@ -205,7 +205,7 @@ impl Interface {
             self.orchestrator.request_value_from_console(osc_addr).await;
         } else {
             // If the value is in the cache, send an explicit notification
-            let value = self.orchestrator.get_cached_value(osc_addr).unwrap();
+            let value = self.orchestrator.get_cached_value(osc_addr).await.unwrap();
             self.orchestrator
                 .notify_provider_by_id(self.id, osc_addr, &value)
                 .await;
@@ -229,7 +229,7 @@ impl Interface {
             Ok(())
         } else {
             // If the value is in the cache, send an explicit notification
-            let value = self.orchestrator.get_cached_value(osc_addr).unwrap();
+            let value = self.orchestrator.get_cached_value(osc_addr).await.unwrap();
             self.orchestrator
                 .notify_provider_by_id(self.id, osc_addr, &value)
                 .await;

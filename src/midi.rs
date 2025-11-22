@@ -2,6 +2,7 @@
 
 use core::f32;
 use std::cell::{Cell, Ref, RefCell};
+use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use std::thread;
 
@@ -15,7 +16,7 @@ use midly::live::LiveEvent;
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 
-use crate::data::{Fader, PathType};
+use crate::data::{Fader, InternalButton, InternalFunction, PathType};
 use crate::orchestrator::{Interface, Value, WriteProvider};
 use crate::settings::{ControllerSettings, MidiDefinition};
 use crate::utils::try_arc_new_cyclic;
@@ -29,6 +30,7 @@ pub struct Controller {
 
     current_bank: usize,
     banks: Vec<Vec<Fader>>,
+    buttons: HashMap<u32, InternalButton>,
 }
 
 impl Controller {
@@ -56,14 +58,20 @@ impl Controller {
                 .find(|p| output.port_name(p).ok().as_deref() == Some(&output_name))
                 .ok_or_else(|| anyhow::anyhow!("MIDI output port '{}' not found", output_name))?;
 
-            let input_connection = input.connect(
-                input_port,
-                "xtouch-wing-input",
-                midi_callback,
-                (weak.clone(), Handle::current()),
-            )?;
+            // Wrap connect errors into anyhow so we don't require the backend error
+            // types to be `Sync` for the `?` operator.
+            let input_connection = input
+                .connect(
+                    input_port,
+                    "xtouch-wing-input",
+                    midi_callback,
+                    (weak.clone(), Handle::current()),
+                )
+                .map_err(|e| anyhow!("MIDI input connect failed: {}", e))?;
 
-            let output_connection = output.connect(output_port, "xtouch-wing-output")?;
+            let output_connection = output
+                .connect(output_port, "xtouch-wing-output")
+                .map_err(|e| anyhow!("MIDI output connect failed: {}", e))?;
 
             info!(
                 "MIDI input '{}' and output '{}' connected",
@@ -77,7 +85,7 @@ impl Controller {
                     .iter()
                     .map(|label| {
                         Fader::new_from_label(label).with_context(|| {
-                            format!("Failed to create fader from label '{}'", label)
+                            format!("Fader label '{}' in your configuration is invalid", label)
                         })
                     })
                     .collect::<Result<Vec<Fader>>>()?;
@@ -85,12 +93,26 @@ impl Controller {
                 banks.push(faders);
             }
 
+            let buttons = midi_settings
+                .assignments
+                .fixed_buttons
+                .iter()
+                .map(|(index, label)| {
+                    let button = InternalButton::new_from_label(label).with_context(|| {
+                        format!("Button label '{}' in your configuration is invalid", label)
+                    })?;
+
+                    Ok((*index, button))
+                })
+                .collect::<Result<HashMap<u32, InternalButton>>>()?;
+
             Ok(Mutex::new(Self {
                 input: Arc::new(std::sync::Mutex::new(input_connection)),
                 output: Arc::new(std::sync::Mutex::new(output_connection)),
                 interface: Arc::new(Mutex::new(None)),
                 current_bank: 0,
                 banks: banks,
+                buttons: buttons,
             }))
         })
     }
@@ -150,7 +172,7 @@ impl Controller {
     }
 
     async fn refresh_bank(&self) -> Result<()> {
-        debug!("Hydrating bank {} buttons & faders", self.current_bank);
+        info!("Hydrating bank {} buttons & faders", self.current_bank);
 
         let faders = self
             .banks
@@ -177,6 +199,27 @@ impl Controller {
         }
 
         Ok(())
+    }
+
+    async fn do_function(&mut self, function: InternalFunction) -> Result<()> {
+        let mut result;
+
+        match function {
+            InternalFunction::NextBank => {
+                self.current_bank = (self.current_bank + 1) % self.banks.len();
+                result = self.refresh_bank().await;
+            }
+            InternalFunction::PreviousBank => {
+                if self.current_bank == 0 {
+                    self.current_bank = self.banks.len() - 1;
+                } else {
+                    self.current_bank -= 1;
+                }
+                result = self.refresh_bank().await;
+            }
+        }
+
+        result.with_context(|| format!("While executing function {:?}", function))
     }
 
     /// Runs a never-ending Vegas mode test pattern.
@@ -385,23 +428,23 @@ fn midi_callback(_timestamp_us: u64, bytes: &[u8], input: &mut (Weak<Mutex<Contr
         }
     };
 
-    let mut controller = controller.blocking_lock();
+    let mut controller_lock = controller.blocking_lock();
 
     match event {
         Ok(LiveEvent::Midi { channel, message }) => {
             match message {
                 midly::MidiMessage::PitchBend { bend } => {
                     let fader_index = channel.as_int() as usize;
-                    let faders = &controller
+                    let faders = &controller_lock
                         .banks
-                        .get(controller.current_bank)
+                        .get(controller_lock.current_bank)
                         .expect("Current bank not found");
 
                     if let Some(fader) = faders.get(fader_index) {
                         let db_value = Fader::float_to_db((bend.as_f64() + 1.0) / 2.0) as f32;
 
                         let osc_addr = fader.get_osc_path(PathType::Fader);
-                        let interface = controller.interface.clone();
+                        let interface = controller_lock.interface.clone();
 
                         handle.spawn(async move {
                             interface
@@ -414,10 +457,43 @@ fn midi_callback(_timestamp_us: u64, bytes: &[u8], input: &mut (Weak<Mutex<Contr
                         });
 
                         // Emit the message back as midi so that the console doesn't complain
-                        controller.output.lock().unwrap().send(bytes).unwrap();
+                        controller_lock.output.lock().unwrap().send(bytes).unwrap();
                     } else {
                         warn!("Fader index {} not found in current bank", fader_index);
                     }
+                }
+                midly::MidiMessage::NoteOn { key, vel } => {
+                    let note = key.as_int() as u32;
+
+                    if vel.as_int() == 0 {
+                        // Button released
+                        return;
+                    } else if vel.as_int() != 127 {
+                        warn!("I am not prepared to handle MIDI input velocities such as {} for note {}", vel.as_int(), key.as_int());
+                        return;
+                    }
+
+                    let maybe_function = controller_lock
+                        .buttons
+                        .get(&note)
+                        .map(|b| b.function.clone());
+
+                    drop(controller_lock);
+
+                    if let Some(function) = maybe_function {
+                        let controller_for_spawn = controller.clone();
+                        handle.spawn(async move {
+                            if let Err(e) = controller_for_spawn.lock().await.do_function(function.clone()).await {
+                                error!(
+                                    "Failed to execute button function {:?}: {}",
+                                    function, e
+                                );
+                            }
+                        });
+                    } else {
+                        debug!("Unassigned Note On for key {}", note);
+                    }
+                    return;
                 }
                 other => {
                     warn!("Unhandled MIDI message: {:?}", other);

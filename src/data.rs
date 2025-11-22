@@ -148,30 +148,43 @@ impl Fader {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Bool {
-    pub last_value: bool,
+pub struct OscButton {
     pub osc_name: String,
 }
 
-/// A value that can be read from OSC into MIDI
-trait ReadFloat {
-    fn read(&self) -> f32;
-}
-
-/// A boolean value that can be read from OSC into MIDI
-trait ReadBool {
-    fn read(&self) -> bool;
-}
-
-impl ReadFloat for Fader {
-    fn read(&self) -> f32 {
-        // self.last_value
-        0.0
+impl OscButton {
+    pub fn new_from_label(label: &str) -> Result<Self> {
+        // TODO: Allow human-readable labels
+        Ok(Self {
+            osc_name: label.to_string(),
+        })
     }
 }
 
-impl ReadBool for Bool {
-    fn read(&self) -> bool {
-        self.last_value
+#[derive(Debug, Clone, PartialEq)]
+pub enum InternalFunction {
+    PreviousBank,
+    NextBank,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InternalButton {
+    pub function: InternalFunction,
+}
+
+impl InternalButton {
+    pub fn new_from_label(label: &str) -> Result<Self> {
+        // TODO: Somehow make this less hard-coded
+        let function = match label.to_lowercase().as_str() {
+            "previous bank" => InternalFunction::PreviousBank,
+            "next bank" => InternalFunction::NextBank,
+            _ => bail!("Unknown internal button function: {}", label),
+        };
+
+        Ok(Self { function })
+    }
+
+    pub fn new(function: InternalFunction) -> Self {
+        Self { function }
     }
 }

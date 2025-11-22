@@ -8,6 +8,7 @@ use figment::Figment;
 use figment::providers::Format;
 use log::debug;
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -35,6 +36,7 @@ pub(crate) struct FaderBank {
     pub faders: Vec<String>,
 }
 
+#[serde_as]
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ControllerAssignments {
@@ -42,6 +44,7 @@ pub(crate) struct ControllerAssignments {
     pub fader_buttons: Vec<String>,
 
     pub fixed_faders: HashMap<u32, String>,
+    #[serde_as(as = "Vec<(_, _)>")]
     pub fixed_buttons: HashMap<u32, String>,
 }
 
@@ -151,7 +154,10 @@ impl ControllerAssignments {
             ],
             fader_buttons: vec!["Rec".to_string(), "Solo".to_string(), "Mute".to_string()],
             fixed_faders: HashMap::new(),
-            fixed_buttons: HashMap::new(),
+            fixed_buttons: HashMap::from([
+                (46, "Previous Bank".to_string()),
+                (47, "Next Bank".to_string()),
+            ]),
         }
     }
 }
@@ -565,6 +571,9 @@ impl Default for Settings {
 
 impl Settings {
     pub fn new() -> Result<Self, figment::Error> {
+        // as an example serialize and print default settings as json with spaces and newlines
+        println!("{}", serde_yaml::to_string(&Settings::default()).unwrap());
+
         let settings: Settings = Figment::new()
             .merge(figment::providers::Serialized::defaults(Settings::default()))
             .merge(figment::providers::Yaml::file("config.yml"))
