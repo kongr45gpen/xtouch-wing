@@ -46,7 +46,9 @@ async fn main() -> Result<()> {
 
     // Set log level based on debug flag
     let log_level = if cli.debug { "debug" } else { "info" };
-    env_logger::Builder::from_env(Env::default().default_filter_or(log_level)).init();
+    env_logger::Builder::from_env(Env::default().default_filter_or(log_level))
+        .format_timestamp_micros()
+        .init();
 
     let config =
         settings::Settings::new().with_context(|| "Failed to load configuration settings")?;
@@ -58,7 +60,7 @@ async fn main() -> Result<()> {
 
     // OSC connection logic
     let remote_addr = format!("{}:{}", config.console.ip, config.console.port);
-    let console = console::Console::new(&remote_addr, cli.local_port)
+    let console = console::Console::new(&config.console.ip, cli.local_port)
         .await
         .with_context(|| "Failed to create OSC console connection")?;
 

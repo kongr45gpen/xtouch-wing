@@ -13,7 +13,7 @@ use tokio::time::timeout;
 
 use crate::console::Console;
 
-const OSC_TIMEOUT: Duration = Duration::from_millis(50);
+const OSC_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Value types stored in the parameter cache (replaces Fader)
 #[derive(Debug, Clone, PartialEq)]
@@ -21,7 +21,6 @@ pub enum Value {
     Int(i32),
     Float(f32),
     Str(String),
-    Blob(Vec<u8>),
 }
 
 pub trait WriteProvider {
@@ -85,7 +84,7 @@ impl Orchestrator {
     /// Request a value for future retrieval. The result is not returned. There is no
     /// guarantee that a result will be returned.
     async fn request_value_from_console(&self, osc_addr: &str) {
-        let console = self.console.read().await;
+        let mut console = self.console.write().await;
         if let Err(e) = console.request_value(osc_addr).await {
             error!("Failed to request value {}: {:?}", osc_addr, e);
         }
@@ -119,7 +118,7 @@ impl Orchestrator {
     async fn notify_provider_by_id(&self, provider_id: usize, osc_addr: &str, value: &Value) {
         if provider_id == 0 {
             // Console
-            let console = self.console.read().await;
+            let mut console = self.console.write().await;
             if let Err(e) = console.set_value(osc_addr, value.clone()).await {
                 error!("Console failed to write {}: {:?}", osc_addr, e);
             }
@@ -156,7 +155,7 @@ impl Debug for Orchestrator {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Interface {
     /// Console is always 0. The rest is the index in providers + 1
     id: usize,
@@ -249,7 +248,7 @@ impl Interface {
         if self.id != 0 {
             // Write to console which is not part of the provider list
             // TODO: Maybe it should be
-            let console = self.orchestrator.console.read().await;
+            let mut console = self.orchestrator.console.write().await;
             if let Err(e) = console.set_value(osc_addr, value.clone()).await {
                 error!("Console failed to write {}: {:?}", osc_addr, e);
             }

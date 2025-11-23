@@ -123,8 +123,8 @@ const ASCII_TO_7SEGMENT: [Option<u8>; 128] = [
     Some(0),  // DEL
 ];
 
-const WING_TO_XTOUCH_COLOR: [u8; 12] = [
-    7, 6, 4, 7, 2, 2, 3, 3, 1, 1, 5, 5
+const WING_TO_XTOUCH_COLOR: [u8; 13] = [
+    0, 7, 6, 4, 7, 2, 2, 3, 3, 1, 1, 5, 5
 ];
 
 /// Simple controller owning a MIDI input and output handle.
