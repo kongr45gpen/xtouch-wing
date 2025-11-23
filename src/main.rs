@@ -66,6 +66,7 @@ async fn main() -> Result<()> {
 
     let mut midi = midi::Controller::new(&config.midi, &config.midi_definition)
         .with_context(|| "Failed to create MIDI controller")?;
+    midi.lock().await.clean_buttons().await;
 
     // let mut mqtt = mqtt::Mqtt::new(&config.mqtt.host, config.mqtt.port)
     //     .await
@@ -73,10 +74,10 @@ async fn main() -> Result<()> {
 
     if cli.vegas {
         warn!("{}", "Test run, Vegas mode".yellow());
-        midi.blocking_lock().vegas_mode(true).await?;
+        midi.lock().await.vegas_mode(true).await?;
     } else if cli.vegas_silent {
         warn!("{}", "Test run, Vegas mode silent".yellow());
-        midi.blocking_lock().vegas_mode(false).await?;
+        midi.lock().await.vegas_mode(false).await?;
     }
 
     let mut midi_arc = std::sync::Arc::new(Box::new(midi) as Box<dyn orchestrator::WriteProvider>);

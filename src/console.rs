@@ -88,15 +88,20 @@ impl Console {
 
         tokio::spawn(async move {
             loop {
-                let meter = wing.read_meters();
+                let meter = match wing.read_meters() {
+                    Ok(m) => m,
+                    Err(libwing::Error::Io(e)) if e.kind() == std::io::ErrorKind::TimedOut => {
+                        // Just a simple timeout, nothing to worry about
+                        continue;
+                    },
+                    Err(e) => {
+                        warn!("Error during meter reception: {:?}", e);
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        continue;
+                    }
+                };
 
-                if meter.is_err() {
-                    debug!("Error reading meters: {:?}", meter.err());
-                    // tokio::time::sleep(Duration::from_millis(10)).await;
-                    continue;
-                }
-
-                let processed = Self::process_meter_data(meters.clone(), meter.unwrap().1).await;
+                let processed = Self::process_meter_data(meters.clone(), meter.1).await;
 
                 match processed {
                     Ok(v) => {
@@ -299,11 +304,8 @@ impl Console {
 
         {
             let mut guard = self.meters.lock().await;
-
             *guard = meters;
-
             self.wing.request_meter(&*guard).with_context(|| "Failed to request meters")?;
-
         }
 
         if self.meter_task_spawned == false {

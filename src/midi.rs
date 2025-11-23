@@ -418,6 +418,25 @@ impl Controller {
         }
     }
 
+    /// Clear all button LEDs (set to 0).
+    pub async fn clean_buttons(&self) {
+        for note in 0..115 {
+            let ev = LiveEvent::Midi {
+                channel: 0.into(),
+                message: midly::MidiMessage::NoteOn {
+                    key: (note as u8).into(),
+                    vel: 0.into(),
+                },
+            };
+
+            let mut buf = Vec::with_capacity(3);
+            ev.write(&mut buf).unwrap();
+            if let Err(e) = self.send_midi(&buf) {
+                warn!("Failed to clear button {}: {}", note, e);
+            }
+        }
+    }
+
     /// Send the current colours, as stored in the cache, to the controller. This does not
     /// update or request OSC values.
     async fn send_colours(&self) {
