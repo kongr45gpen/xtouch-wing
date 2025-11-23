@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Ok, Result, anyhow};
 use figment::providers;
+use libwing::Meter;
 use log::{debug, error, info, warn};
 use tokio::sync::{Notify, RwLock};
 use tokio::time::timeout;
@@ -25,6 +26,7 @@ pub enum Value {
 
 pub trait WriteProvider {
     fn write(&self, addr: &str, value: Value) -> anyhow::Result<()>;
+    fn write_meter_values(&self, values: Vec<Vec<f32>>) -> anyhow::Result<()>;
     fn set_interface(&self, interface: Interface);
 }
 
@@ -164,9 +166,6 @@ pub struct Interface {
 
 // TODO: Is this necessary and safe?
 // We only access the orchestrator through safe methods
-unsafe impl Send for Interface {}
-unsafe impl Sync for Interface {}
-
 unsafe impl Send for Orchestrator {}
 unsafe impl Sync for Orchestrator {}
 
@@ -236,6 +235,9 @@ impl Interface {
         }
     }
 
+    /// Set an OSC value, notifying all other providers/interfaces except self.
+    /// 
+    /// For example, a console can set_value, which will notify everyone else.
     pub async fn set_value(&self, osc_addr: &str, value: Value) {
         // Update cache
         self.orchestrator
@@ -247,7 +249,6 @@ impl Interface {
 
         if self.id != 0 {
             // Write to console which is not part of the provider list
-            // TODO: Maybe it should be
             let mut console = self.orchestrator.console.write().await;
             if let Err(e) = console.set_value(osc_addr, value.clone()).await {
                 error!("Console failed to write {}: {:?}", osc_addr, e);
@@ -260,6 +261,29 @@ impl Interface {
                 if let Err(e) = provider.write(osc_addr, value.clone()) {
                     error!("Provider {} failed to write {}: {:?}", id, osc_addr, e);
                 }
+            }
+        }
+    }
+
+    /// Subscribe to specific meter updates from the console.
+    /// 
+    /// NOTE: This will override any previous subscriptions.
+    /// TODO: Make it not override any previous subscriptions.
+    pub async fn subscribe_to_meters(&self, meters: Vec<Meter>) -> Result<()> {
+        let mut console = self.orchestrator.console.write().await;
+        debug!("Interface [{}] subscribing to len={} meters", self.id, meters.len());
+        console.set_meters(meters).await
+    }
+
+    /// Broadcast meter values.
+    /// 
+    /// These values are not cached, but instead are sent immediatelly to subscribers.
+    /// 
+    /// TODO: Use slice instead of vector
+    pub(crate) async fn set_meters(&self, values: Vec<Vec<f32>>) {
+        for provider in self.orchestrator.providers.iter() {
+            if let Err(e) = provider.write_meter_values(values.clone()) {
+                error!("Provider failed to write meter values: {:?}", e);
             }
         }
     }

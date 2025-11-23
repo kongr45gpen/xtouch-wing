@@ -7,6 +7,7 @@ use std::sync::{Arc, Weak};
 use std::thread;
 
 use anyhow::{Context, Result, anyhow};
+use clap::error;
 use colored::control;
 use log::{debug, error, info, warn};
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
@@ -291,8 +292,6 @@ impl Controller {
     }
 
     pub async fn process_osc_input(&mut self, osc_addr: &str, value: &Value) -> Result<()> {
-        debug!("Processing OSC input {} = {:?}", osc_addr, value);
-
         let faders = &self
             .banks
             .get(self.current_bank)
@@ -348,6 +347,8 @@ impl Controller {
                 .await;
         }
 
+        drop(interface_guard);
+
         self.refresh_all_button_leds().await;
 
         self.write_text_to_main_display(
@@ -356,6 +357,8 @@ impl Controller {
                 .and_then(|name| name.as_deref())
                 .unwrap_or(""),
         ).await;
+
+        self.request_meters().await;
 
         Ok(())
     }
@@ -553,6 +556,67 @@ impl Controller {
         }
     }
 
+    async fn request_meters(&self) {
+        let bank = match self.banks.get(self.current_bank) {
+            Some(b) => b,
+            None => {
+                error!("Current bank {} not found when requesting meters", self.current_bank);
+                return;
+            }
+        };
+
+        let meters = bank
+            .iter()
+            .filter_map(|fader| {
+                fader.get_meter().clone()
+            })
+            .collect::<Vec<_>>();
+
+        let interface = self.interface.lock().await;
+
+        if interface.is_none() {
+            error!("Interface not set when requesting meters");
+            return;
+        }
+
+        let result = interface.as_ref().unwrap().subscribe_to_meters(meters).await;
+        if let Err(e) = result {
+            error!("Failed to subscribe to meters: {}", e);
+        }
+    }
+
+    async fn send_meters(&self, values: Vec<Vec<f32>>) {
+        // TODO: Handle non-existent meters!!!
+        for (chan, channel_values) in values.iter().enumerate() {
+            if chan >= 8 {
+                warn!("Ignoring meter channel {} (only 0-7 supported)", chan);
+                continue;
+            }
+
+            let level = channel_values.get(0).copied().unwrap_or(0.0);
+            let level = level.clamp(0.0, 1.0);
+            // Power scaling
+            let level = level.powf(4.0);
+
+            let channel_offset: u8 = (level * 15.0) as u8;
+
+            let ev = LiveEvent::Midi {
+                channel: 0.into(),
+                message: midly::MidiMessage::ChannelAftertouch {
+                    vel: (chan as u8 * 16 + channel_offset).into(),
+                },
+            };
+
+            let mut buf = Vec::with_capacity(3);
+            ev.write(&mut buf)
+                .map_err(|e| anyhow!("MIDI write fail {}", e))
+                .unwrap();
+            if let Err(e) = self.send_midi(&buf) {
+                warn!("Failed to send MIDI for meter channel {}: {}", chan, e);
+            }
+        }
+    }
+
     /// Runs a never-ending Vegas mode test pattern.
     pub async fn vegas_mode(&mut self, faders: bool) -> Result<()> {
         let mut clk = 0;
@@ -738,6 +802,18 @@ impl WriteProvider for Arc<Mutex<Controller>> {
                 error!("Failed to refresh bank on interface set: {}", e);
             }
         });
+    }
+
+    fn write_meter_values(&self, values: Vec<Vec<f32>>) -> anyhow::Result<()> {
+        let controller = self.clone();
+
+        tokio::task::spawn(async move {
+            let controller = controller.lock().await;
+
+            controller.send_meters(values).await;
+        });
+
+        Ok(())
     }
 }
 

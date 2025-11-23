@@ -21,10 +21,13 @@ pub struct Console {
     remote_addr: String,
 
     interface: Arc<Mutex<Option<Interface>>>,
+
+    meter_task_spawned: bool,
+    meters: Arc<Mutex<Vec<libwing::Meter>>>,
 }
 
 impl Console {
-    /// Create and connect a new Console (async).
+    /// Create and connect a new Console.
     pub async fn new(remote_addr: &str, local_port: u16) -> Result<Self> {
         use colored::Colorize;
 
@@ -41,12 +44,15 @@ impl Console {
             wing,
             remote_addr: remote_addr.to_string(),
             interface: Mutex::new(None).into(),
+            meter_task_spawned: false,
+            meters: Arc::new(Mutex::new(vec![])),
         };
 
-        // Initialise NAME_TO_DEF map, otherwise it will happen during a definition, which is not great.
+        // Initialise NAME_TO_DEF map, otherwise it will happen during a request, which is not great.
+        log::debug!("Initialising NAME_TO_DEF map...");
         std::hint::black_box(WingConsole::name_to_id("/$syscfg/$cnscfg"));
+        log::debug!("Initialised  NAME_TO_DEF map.");
 
-        console.spawn_subscribe_task();
         console.spawn_recv_task();
 
         info!("OSC connected to {}", remote_addr.green());
@@ -58,14 +64,6 @@ impl Console {
     async fn identify(interface: &Interface) -> Result<String> {
         debug!("Attempting to identify console...");
 
-        // let interface = self.interface
-        //     .lock()
-        //     .await
-        //     .as_ref()
-        //     .ok_or_else(|| anyhow!("Interface not set up, cannot identify just now."))?
-        //     // The interface lock has to be released, so that the RX part can be used.
-        //     .clone();
-
         let result = interface
             .get_value("/$syscfg/$cnscfg", true)
             .await?;
@@ -76,7 +74,45 @@ impl Console {
         }
     }
 
-    fn spawn_subscribe_task(&self) {
+    /// Spawn a background tokio task that periodically reads meter values.
+    /// 
+    /// ## Panics
+    /// This will panic if no meters have been requested, as the internal UDP socket
+    /// might not have been set up.
+    fn spawn_meter_task(&self) {
+        let mut wing = self.wing.clone();
+        let interface = self.interface.clone();
+        let meters = self.meters.clone();
+
+        info!("Subscribing to meter updates...");
+
+        tokio::spawn(async move {
+            loop {
+                let meter = wing.read_meters();
+
+                if meter.is_err() {
+                    debug!("Error reading meters: {:?}", meter.err());
+                    // tokio::time::sleep(Duration::from_millis(10)).await;
+                    continue;
+                }
+
+                let processed = Self::process_meter_data(meters.clone(), meter.unwrap().1).await;
+
+                match processed {
+                    Ok(v) => {
+                        let interface = interface.lock().await;
+                        if let Some(iface) = interface.as_ref() {
+                            iface.set_meters(v).await;
+                        } else {
+                            error!("No interface set to handle meter data");
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Error processing meter data: {:?}", e);
+                    }
+                }
+            }
+        });
     }
 
     /// Spawn a background tokio task that listens for incoming OSC packets
@@ -108,7 +144,30 @@ impl Console {
         });
     }
 
-    /// Decode raw UDP bytes into OSC packets and update the cache.
+    /// Decode raw meter data into an array of meter values
+    async fn process_meter_data(meters: Arc<Mutex<Vec<libwing::Meter>>>, data: Vec<i16>) -> Result<Vec<Vec<f32>>> {
+        let meters = meters.lock().await;
+
+        let mut data_index = 0;
+
+        let result = meters.iter().map(|meter| {
+            let count = wing_get_meter_count(meter);
+
+            if data_index + count > data.len() {
+                bail!("Not enough data received for meters. Expected {} values, got {}", count + data_index, data.len());
+            }
+
+            let values = &data[data_index..data_index + count];
+
+            data_index += count;
+
+           Ok( values.iter().map(|v| *v as f32 / 32768.0 + 1.0).collect::<Vec<f32>>())
+        }).collect::<Result<Vec<Vec<f32>>>>();
+
+        result
+    }
+
+    /// Decode raw data into OSC packets and update the cache.
     async fn process_node_data(
         interface: Arc<Mutex<Option<Interface>>>,
         node_id: i32,
@@ -233,5 +292,39 @@ impl Console {
                     Err(e) => error!("Failed to identify console: {:?}", e),
                 }
         });
+    }
+
+    pub async fn set_meters(&mut self, meters: Vec<libwing::Meter>) -> Result<()> {
+        use colored::Colorize;
+
+        {
+            let mut guard = self.meters.lock().await;
+
+            *guard = meters;
+
+            self.wing.request_meter(&*guard).with_context(|| "Failed to request meters")?;
+
+        }
+
+        if self.meter_task_spawned == false {
+            self.spawn_meter_task();
+            self.meter_task_spawned = true;
+        }
+
+        Ok(())
+    }
+}
+
+fn wing_get_meter_count(meter: &libwing::Meter) -> usize {
+    use libwing::Meter;
+
+    match meter {
+        Meter::Channel(_) | Meter::Aux(_) | Meter::Bus(_) | Meter::Main(_) | Meter::Matrix(_) => 8,
+        Meter::Dca(_) => 4,
+        Meter::Fx(_) => 10,
+        Meter::Source(_) | Meter::Output(_) => 1,
+        Meter::Monitor => 6,
+        Meter::Rta => 120,
+        Meter::Channel2(_) | Meter::Aux2(_) | Meter::Bus2(_) | Meter::Main2(_) | Meter::Matrix2(_) => 11,
     }
 }

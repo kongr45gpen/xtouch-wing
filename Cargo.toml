@@ -22,3 +22,6 @@ midly = "0.5.3"
 rumqttc = "0.25.0"
 regex = "1.12.2"
 libwing = "1.0.4"
+
+[patch.crates-io]
+libwing = { path = 'libwing' }

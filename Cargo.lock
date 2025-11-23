@@ -771,8 +771,6 @@ dependencies = [
 [[package]]
 name = "libwing"
 version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4edf221e231fe5faceb0a390700d222f05c5b5869396e91aba64fee19621a2b1"
 dependencies = [
  "jzon",
  "lazy_static",

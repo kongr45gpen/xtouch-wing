@@ -28,8 +28,8 @@ pub enum PathType {
 pub struct Fader {
     osc_directory: String,
     fader_type: FaderType,
-    /// Meter definition as (group byte, meter byte)
-    wing_meter: Option<(u8, u8)>,
+
+    wing_meter: Option<libwing::Meter>,
 }
 
 impl Fader {
@@ -91,6 +91,10 @@ impl Fader {
         db
     }
 
+    pub fn get_meter(&self) -> &Option<libwing::Meter> {
+        &self.wing_meter
+    }
+
     pub fn new_from_label(label: &str) -> Result<Self> {
         // Label has format: "Channel 1"/"Matrix 4"
         let re = Regex::new(r"^(\w+)\s*(\d+)?$").unwrap();
@@ -123,13 +127,17 @@ impl Fader {
                     .parse::<u8>()
                     .map_err(|_| anyhow::anyhow!("Invalid fader index: {}", index))?;
 
+                if num == 0 {
+                    bail!("Fader index {} must be greater than 0", label);
+                }
+
                 let wing_meter = match fader_type {
-                    FaderType::Channel => Some((0xab, num)),
-                    FaderType::Aux => Some((0xac, num)),
-                    FaderType::Bus => Some((0xad, num)),
-                    FaderType::Main => Some((0xae, num)),
-                    FaderType::Matrix => Some((0xaf, num)),
-                    FaderType::DCA => Some((0xa5, num)),
+                    FaderType::Channel => Some(libwing::Meter::Channel(num - 1)),
+                    FaderType::Aux => Some(libwing::Meter::Aux(num - 1)),
+                    FaderType::Bus => Some(libwing::Meter::Bus(num - 1)),
+                    FaderType::Main => Some(libwing::Meter::Main(num - 1)),
+                    FaderType::Matrix => Some(libwing::Meter::Matrix(num - 1)),
+                    FaderType::DCA => Some(libwing::Meter::Dca(num - 1)),
                     _ => None,
                 };
 
