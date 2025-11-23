@@ -233,7 +233,7 @@ impl Controller {
         })
     }
 
-    pub fn process_fader_input(
+    pub async fn process_fader_input(
         &mut self,
         fader_index: usize,
         fader: &Fader,
@@ -257,7 +257,7 @@ impl Controller {
                     ev.write(&mut buf)
                         .map_err(|e| anyhow!("MIDI write fail {}", e))?;
                     // synchronous context: use blocking_lock to acquire the Tokio mutex
-                    self.output.lock().unwrap().send(&buf)?;
+                    self.send_midi(&buf)?;
                 } else {
                     warn!("Expected float value for fader, got {:?}", value);
                 }
@@ -271,24 +271,17 @@ impl Controller {
                         .unwrap_or(7);
 
                     self.cached_colours[fader_index] = wing_color;
-
-                    // TODO: Use function that already exists
-                    let sysex = [
-                        0xF0, 0x00, 0x00, 0x66, 0x14, 0x72,
-                        self.cached_colours[0],
-                        self.cached_colours[1],
-                        self.cached_colours[2],
-                        self.cached_colours[3],
-                        self.cached_colours[4],
-                        self.cached_colours[5],
-                        self.cached_colours[6],
-                        self.cached_colours[7],
-                        0xF7,
-                    ];
-
-                    self.output.lock().unwrap().send(&sysex)?;
+                    self.send_colours().await;
                 } else {
                     warn!("Expected int value for scribble colour, got {:?}", value);
+                }
+            }
+            PathType::ScribbleName => {
+                if let Value::Str(name) = value {
+                    debug!("Setting fader {} scribble name to '{}'", fader_index, name);
+                    self.set_lcd_text(name, fader_index as u8).await;
+                } else {
+                    warn!("Expected string value for scribble name, got {:?}", value);
                 }
             }
             _ => {}
@@ -297,7 +290,7 @@ impl Controller {
         Ok(())
     }
 
-    pub fn process_osc_input(&mut self, osc_addr: &str, value: &Value) -> Result<()> {
+    pub async fn process_osc_input(&mut self, osc_addr: &str, value: &Value) -> Result<()> {
         debug!("Processing OSC input {} = {:?}", osc_addr, value);
 
         let faders = &self
@@ -309,7 +302,7 @@ impl Controller {
 
         for (index, fader) in faders.iter().enumerate() {
             if let Some(path_type) = fader.path_matches(osc_addr) {
-                self.process_fader_input(index, fader, path_type, value)?;
+                self.process_fader_input(index, fader, path_type, value).await?;
             }
         }
 
@@ -348,6 +341,10 @@ impl Controller {
 
             interface
                 .request_value_notification(&fader.get_osc_path(PathType::ScribbleColour), false)
+                .await;
+
+            interface
+                .request_value_notification(&fader.get_osc_path(PathType::ScribbleName), false)
                 .await;
         }
 
@@ -403,7 +400,9 @@ impl Controller {
             ev.write(&mut buf)
                 .map_err(|e| anyhow!("MIDI write fail {}", e))
                 .unwrap();
-            self.output.lock().unwrap().send(&buf).unwrap();
+            if let Err(e) = self.send_midi(&buf) {
+                warn!("Failed to send MIDI for button {}: {}", button, e);
+            }
         } else {
             // ...
         }
@@ -427,8 +426,60 @@ impl Controller {
             0xF7,
         ];
 
-        if let Err(e) = self.output.lock().unwrap().send(&sysex) {
+        if let Err(e) = self.send_midi(&sysex) {
             warn!("Failed to send colour sysex: {}", e);
+        }
+    }
+
+    async fn set_lcd_text(&self, text: &str, display: u8) {
+        const MAX_LEN: u8 = 7;
+        const NUM_DISPLAYS: u8 = 8;
+
+        if display >= NUM_DISPLAYS {
+            warn!("Invalid display index {}", display);
+            return;
+        }
+
+        let (row1_str, row2_str) = if text.contains(' ') && text.chars().count() <= (MAX_LEN as usize) * 2 {
+            let mut parts = text.splitn(2, ' ');
+            (
+                parts.next().unwrap_or("").to_string(),
+                parts.next().unwrap_or("").to_string(),
+            )
+        } else {
+            let mut it = text.chars();
+            let a: String = it.by_ref().take(MAX_LEN as usize).collect();
+            let b: String = it.take(MAX_LEN as usize).collect();
+            (a, b)
+        };
+
+        fn pad(s: &str, max_len: usize) -> Vec<u8> {
+            let mut bytes = s.bytes().collect::<Vec<u8>>();
+            while bytes.len() < max_len {
+                bytes.push(b' ');
+            }
+            bytes
+        }
+
+        let row1 = pad(&row1_str, MAX_LEN as usize);
+        let row2 = pad(&row2_str, MAX_LEN as usize);
+        let offset1 = display.wrapping_mul(MAX_LEN);
+        let offset2 = offset1.wrapping_add(NUM_DISPLAYS.wrapping_mul(MAX_LEN));
+
+        let mut sysex1: Vec<u8> = [0xF0, 0x00, 0x00, 0x66, 0x14, 0x12, offset1].to_vec();
+        sysex1.extend_from_slice(&row1);
+        sysex1.push(0xF7);
+
+        let mut sysex2: Vec<u8> = [0xF0, 0x00, 0x00, 0x66, 0x14, 0x12, offset2].to_vec();
+        sysex2.extend_from_slice(&row2);
+        sysex2.push(0xF7);
+
+        if let Err(e) = self.send_midi(&sysex1) {
+            warn!("Failed to write to display {} row1: {}", display, e);
+        }
+
+        if let Err(e) = self.send_midi(&sysex2) {
+            warn!("Failed to write to display {} row2: {}", display, e);
         }
     }
 
@@ -488,10 +539,17 @@ impl Controller {
 
                 let mut buf = Vec::with_capacity(3);
                 ev.write(&mut buf).unwrap();
-                if let Err(e) = self.output.lock().unwrap().send(&buf) {
+                if let Err(e) = self.send_midi(&buf) {
                     warn!("Failed to write to main display: {}", e);
                 }
             }
+        }
+    }
+
+    fn send_midi(&self, data: &[u8]) -> Result<()> {
+        match self.output.lock() {
+            Ok(mut conn) => conn.send(data).map_err(|e| anyhow!("MIDI send failed: {}", e)),
+            Err(e) => Err(anyhow!("Failed to lock MIDI output mutex: {:?}", e)),
         }
     }
 
@@ -510,14 +568,11 @@ impl Controller {
             .to_vec();
             sysex.extend_from_slice(&message[..max_len.min(message.len())]);
             sysex.push(0xF7);
-            self.output.lock().unwrap().send(&sysex)?;
+            self.send_midi(&sysex)?;
         }
 
         loop {
             tokio::time::sleep(tokio::time::Duration::from_millis(1000 / 30)).await;
-
-            // Acquire the output lock once for this iteration (do not hold across await)
-            let mut out_guard = self.output.lock().unwrap();
 
             let mut buf = Vec::new();
 
@@ -535,7 +590,7 @@ impl Controller {
 
                 ev.write(&mut buf).unwrap();
                 if faders {
-                    out_guard.send(&buf)?;
+                    self.send_midi(&buf)?;
                 }
                 buf.clear();
             }
@@ -557,7 +612,7 @@ impl Controller {
                 };
 
                 ev.write(&mut buf).unwrap();
-                out_guard.send(&buf)?;
+                self.send_midi(&buf)?;
                 buf.clear();
             }
 
@@ -579,7 +634,7 @@ impl Controller {
                 };
 
                 ev.write(&mut buf).unwrap();
-                out_guard.send(&buf)?;
+                self.send_midi(&buf)?;
                 buf.clear();
             }
 
@@ -600,7 +655,7 @@ impl Controller {
                 };
 
                 ev.write(&mut buf).unwrap();
-                out_guard.send(&buf)?;
+                self.send_midi(&buf)?;
                 buf.clear();
             }
 
@@ -621,7 +676,7 @@ impl Controller {
                 ];
 
                 // Scribble Strip Colours (sysex)
-                out_guard.send(&sysex)?;
+                self.send_midi(&sysex)?;
             }
 
             // 7-segment display
@@ -644,7 +699,7 @@ impl Controller {
                 };
 
                 ev.write(&mut buf).unwrap();
-                out_guard.send(&buf)?;
+                self.send_midi(&buf)?;
                 buf.clear();
             }
 
@@ -663,7 +718,7 @@ impl WriteProvider for Arc<Mutex<Controller>> {
         tokio::task::spawn(async move {
             let mut controller = controller.lock().await;
 
-            if let Err(e) = controller.process_osc_input(&addr, &value) {
+            if let Err(e) = controller.process_osc_input(&addr, &value).await {
                 error!("Failed to process OSC input {} = {:?}: {}", addr, value, e);
             }
         });
@@ -729,7 +784,9 @@ fn midi_callback(_timestamp_us: u64, bytes: &[u8], input: &mut (Weak<Mutex<Contr
                         });
 
                         // Emit the message back as midi so that the console doesn't complain
-                        controller_lock.output.lock().unwrap().send(bytes).unwrap();
+                        if let Err(e) = controller_lock.send_midi(bytes) {
+                            warn!("Failed to echo MIDI message: {}", e);
+                        }
                     } else {
                         warn!("Fader index {} not found in current bank", fader_index);
                     }
