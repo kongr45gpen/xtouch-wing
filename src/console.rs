@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use libwing::{WingConsole, WingNodeData, WingResponse};
-use log::{debug, error, info, warn};
+use tracing::{Instrument, Level, debug, error, event, info, instrument, span, trace, warn};
 use rosc::{OscMessage, OscPacket, OscType, decoder, encoder};
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, RwLock};
@@ -28,9 +28,8 @@ pub struct Console {
 
 impl Console {
     /// Create and connect a new Console.
+    #[instrument(name = "wing_connect", level = "info", skip_all)]
     pub async fn new(remote_addr: &str, local_port: u16) -> Result<Self> {
-        use colored::Colorize;
-
         let wing = WingConsole::connect(Some(remote_addr)).with_context(|| {
             format!(
                 "Failed to connect to Wing console at remote address {}",
@@ -49,13 +48,13 @@ impl Console {
         };
 
         // Initialise NAME_TO_DEF map, otherwise it will happen during a request, which is not great.
-        log::debug!("Initialising NAME_TO_DEF map...");
+        debug!("Initialising NAME_TO_DEF map...");
         std::hint::black_box(WingConsole::name_to_id("/$syscfg/$cnscfg"));
-        log::debug!("Initialised  NAME_TO_DEF map.");
+        debug!("Initialised  NAME_TO_DEF map.");
 
         console.spawn_recv_task();
 
-        info!("OSC connected to {}", remote_addr.green());
+        event!(Level::INFO, addr = remote_addr, "Console connected");
 
         Ok(console)
     }
@@ -84,7 +83,11 @@ impl Console {
         let interface = self.interface.clone();
         let meters = self.meters.clone();
 
-        info!("Subscribing to meter updates...");
+        let span = span!(Level::INFO, "wing_meter_task");
+
+        span.in_scope(|| {
+            info!("Subscribing to meter updates...");
+        });
 
         tokio::spawn(async move {
             loop {
@@ -101,7 +104,11 @@ impl Console {
                     }
                 };
 
+                trace!(?meter, "Received meter data");
+
                 let processed = Self::process_meter_data(meters.clone(), meter.1).await;
+
+                trace!(?processed, "Processed meter data");
 
                 match processed {
                     Ok(v) => {
@@ -117,7 +124,7 @@ impl Console {
                     }
                 }
             }
-        });
+        }.instrument(span));
     }
 
     /// Spawn a background tokio task that listens for incoming OSC packets
@@ -132,6 +139,9 @@ impl Console {
                 match wing_read {
                     Ok(data) => match data {
                         WingResponse::NodeData(id, data) => {
+                            let span = span!(Level::DEBUG, "osc_in", node_id = id);
+                            let _enter = span.enter();
+
                             Console::process_node_data(interface.clone(), id, data).await;
                         }
                         WingResponse::RequestEnd => {}
@@ -217,13 +227,10 @@ impl Console {
 
     /// Handle a single OSC message and update the cache.
     async fn handle_value(interface: Arc<Mutex<Option<Interface>>>, node_addr: &str, data: Value) {
-        use colored::Colorize;
-
         debug!(
-            "{} OSC value: {:20} {:?}",
-            "Received".green(),
-            node_addr.cyan(),
-            data
+            node_addr,
+            ?data,
+            "Received OSC value"
         );
 
         if let Some(iface) = interface.lock().await.as_ref() {
@@ -235,8 +242,6 @@ impl Console {
 
     /// Performs a request for an OSC value, without returning it.
     pub async fn request_value(&mut self, osc_addr: &str) -> Result<()> {
-        use colored::Colorize;
-
         let node_id = WingConsole::name_to_id(osc_addr).with_context(|| {
             format!(
                 "When requesting value, failed to get Node ID for OSC address {}",
@@ -245,10 +250,11 @@ impl Console {
         })?;
 
         debug!(
-            "{} OSC value: {:18}",
-            "Requesting".yellow(),
-            osc_addr.cyan()
+            osc_addr,
+            "Requesting OSC value"
         );
+
+        trace!(node_id, "Requesting OSC value Node ID");
 
         self.wing
             .request_node_data(node_id)
@@ -259,14 +265,7 @@ impl Console {
 
     /// Set an OSC value
     pub async fn set_value(&mut self, osc_addr: &str, value: Value) -> Result<()> {
-        use colored::Colorize;
-
-        debug!(
-            "{} OSC value: {:22} {:?}",
-            "Setting".yellow(),
-            osc_addr.cyan(),
-            value
-        );
+        debug!(osc_addr, ?value, "Setting OSC value");
 
         let node_id = WingConsole::name_to_id(osc_addr).with_context(|| {
             format!(
@@ -285,23 +284,19 @@ impl Console {
     }
 
     pub async fn set_interface(&mut self, interface: Interface) {
-        use colored::Colorize;
-
         let cloned_interface_for_later = interface.clone();
 
         self.interface.lock().await.replace(interface);
 
         tokio::spawn(async move {
                 match Self::identify(&cloned_interface_for_later).await {
-                    Ok(id_string) => info!("Console identified as {}", id_string.yellow().bold()),
+                    Ok(id_string) => info!(id_string, "Console identified as"),
                     Err(e) => error!("Failed to identify console: {:?}", e),
                 }
         });
     }
 
     pub async fn set_meters(&mut self, meters: Vec<libwing::Meter>) -> Result<()> {
-        use colored::Colorize;
-
         {
             let mut guard = self.meters.lock().await;
             *guard = meters;

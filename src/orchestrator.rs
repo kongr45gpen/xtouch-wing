@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Ok, Result, anyhow};
 use figment::providers;
 use libwing::Meter;
-use log::{debug, error, info, warn};
+use tracing::{debug, error, info, warn};
 use tokio::sync::{Notify, RwLock};
 use tokio::time::timeout;
 
@@ -271,7 +271,7 @@ impl Interface {
     /// TODO: Make it not override any previous subscriptions.
     pub async fn subscribe_to_meters(&self, meters: Vec<Meter>) -> Result<()> {
         let mut console = self.orchestrator.console.write().await;
-        debug!("Interface [{}] subscribing to len={} meters", self.id, meters.len());
+        debug!(interface_id = self.id, meter_count = meters.len(), "Interface subscribed to meters");
         console.set_meters(meters).await
     }
 

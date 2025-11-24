@@ -7,9 +7,9 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use colored::Colorize;
 use env_logger::Env;
-use log::{debug, error, info, warn};
+use tracing::{debug, error, info, level_filters::LevelFilter, warn};
+use tracing_subscriber::EnvFilter;
 
 mod console;
 mod data;
@@ -45,18 +45,22 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Set log level based on debug flag
-    let log_level = if cli.debug { "debug" } else { "info" };
-    env_logger::Builder::from_env(Env::default().default_filter_or(log_level))
-        .format_timestamp_micros()
+    let log_level = if cli.debug { LevelFilter::DEBUG } else { LevelFilter::INFO };
+    // env_logger::Builder::from_env(Env::default().default_filter_or(log_level))
+    //     .format_timestamp_micros()
+    //     .init();
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env().add_directive(log_level.into()))
+        .with_target(true)
         .init();
 
     let config =
         settings::Settings::new().with_context(|| "Failed to load configuration settings")?;
 
     if cli.debug {
-        debug!("{}", "Debug mode is enabled".yellow());
+        debug!("Debug mode is enabled");
     }
-    info!("{}", "XTouch Wing started".green());
+    info!("XTouch Wing started");
 
     // OSC connection logic
     let remote_addr = format!("{}:{}", config.console.ip, config.console.port);
@@ -73,10 +77,10 @@ async fn main() -> Result<()> {
     //     .with_context(|| "Failed to create MQTT client")?;
 
     if cli.vegas {
-        warn!("{}", "Test run, Vegas mode".yellow());
+        warn!("{}", "Test run, Vegas mode");
         midi.lock().await.vegas_mode(true).await?;
     } else if cli.vegas_silent {
-        warn!("{}", "Test run, Vegas mode silent".yellow());
+        warn!("{}", "Test run, Vegas mode silent");
         midi.lock().await.vegas_mode(false).await?;
     }
 

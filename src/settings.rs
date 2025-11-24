@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use figment::Figment;
 use figment::providers::Format;
-use log::debug;
+use tracing::{Level, debug, event};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
@@ -571,8 +571,7 @@ impl Default for Settings {
 
 impl Settings {
     pub fn new() -> Result<Self, figment::Error> {
-        // as an example serialize and print default settings as json with spaces and newlines
-        println!("{}", serde_yaml::to_string(&Settings::default()).unwrap());
+        // println!("{}", serde_yaml::to_string(&Settings::default()).unwrap());
 
         let settings: Settings = Figment::new()
             .merge(figment::providers::Serialized::defaults(Settings::default()))
@@ -580,7 +579,7 @@ impl Settings {
             .merge(figment::providers::Env::prefixed("WING_").split("_"))
             .extract()?;
 
-        debug!("Loaded settings: {:#?}", settings);
+        event!(Level::INFO, settings = ?settings, "Loaded settings");
 
         Ok(settings)
     }

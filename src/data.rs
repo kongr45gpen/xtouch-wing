@@ -1,7 +1,7 @@
 //! Common data types
 
 use anyhow::{Result, bail};
-use log::debug;
+use tracing::debug;
 use regex::Regex;
 
 #[derive(Debug, Clone, PartialEq)]

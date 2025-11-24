@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use log::{debug, error};
+use tracing::{debug, error};
 use rumqttc::{AsyncClient, MqttOptions};
 use tokio::{task, time};
 

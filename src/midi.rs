@@ -8,14 +8,14 @@ use std::thread;
 
 use anyhow::{Context, Result, anyhow};
 use clap::error;
-use colored::control;
-use log::{debug, error, info, warn};
+use tracing::{Level, debug, error, info, instrument, trace, warn};
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use midly::PitchBend;
 use midly::io::Write;
 use midly::live::LiveEvent;
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
+use tracing_subscriber::field::debug;
 
 use crate::data::{Fader, InternalButton, InternalFunction, PathType};
 use crate::orchestrator::{Interface, Value, WriteProvider};
@@ -234,6 +234,7 @@ impl Controller {
         })
     }
 
+    #[instrument(name = "midi_set_fader", level = Level::DEBUG, skip(self, fader, value))]
     pub async fn process_fader_input(
         &mut self,
         fader_index: usize,
@@ -245,6 +246,8 @@ impl Controller {
             PathType::Fader => {
                 if let Value::Float(db) = value {
                     let midi_value: f64 = Fader::db_to_float((*db) as f64);
+
+                    debug!(fader_index, db = ?db, val = ?midi_value, "Setting fader value");
 
                     let ev = LiveEvent::Midi {
                         channel: (fader_index as u8).into(),
@@ -264,10 +267,10 @@ impl Controller {
                 }
             }
             PathType::ScribbleColour => {
-                if let Value::Int(color_index) = value {
-                    debug!("Setting fader {} scribble colour to index {}", fader_index, color_index);
+                if let Value::Int(colour_index) = value {
+                    debug!(fader_index, scribble_colour = colour_index, "Setting fader scribble colour");
                     let wing_color = WING_TO_XTOUCH_COLOR
-                        .get(*color_index as usize)
+                        .get(*colour_index as usize)
                         .copied()
                         .unwrap_or(7);
 
@@ -279,7 +282,7 @@ impl Controller {
             }
             PathType::ScribbleName => {
                 if let Value::Str(name) = value {
-                    debug!("Setting fader {} scribble name to '{}'", fader_index, name);
+                    debug!(fader_index, scribble_name = name.as_str(), "Setting fader scribble name");
                     self.set_lcd_text(name, fader_index as u8).await;
                 } else {
                     warn!("Expected string value for scribble name, got {:?}", value);
@@ -453,12 +456,12 @@ impl Controller {
         }
     }
 
-    async fn set_lcd_text(&self, text: &str, display: u8) {
+    async fn set_lcd_text(&self, text: &str, disp: u8) {
         const MAX_LEN: u8 = 7;
         const NUM_DISPLAYS: u8 = 8;
 
-        if display >= NUM_DISPLAYS {
-            warn!("Invalid display index {}", display);
+        if disp >= NUM_DISPLAYS {
+            warn!("Invalid display index {:?}", disp);
             return;
         }
 
@@ -485,7 +488,7 @@ impl Controller {
 
         let row1 = pad(&row1_str, MAX_LEN as usize);
         let row2 = pad(&row2_str, MAX_LEN as usize);
-        let offset1 = display.wrapping_mul(MAX_LEN);
+        let offset1 = disp.wrapping_mul(MAX_LEN);
         let offset2 = offset1.wrapping_add(NUM_DISPLAYS.wrapping_mul(MAX_LEN));
 
         let mut sysex1: Vec<u8> = [0xF0, 0x00, 0x00, 0x66, 0x14, 0x12, offset1].to_vec();
@@ -497,11 +500,11 @@ impl Controller {
         sysex2.push(0xF7);
 
         if let Err(e) = self.send_midi(&sysex1) {
-            warn!("Failed to write to display {} row1: {}", display, e);
+            warn!("Failed to write to display {} row1: {}", disp, e);
         }
 
         if let Err(e) = self.send_midi(&sysex2) {
-            warn!("Failed to write to display {} row2: {}", display, e);
+            warn!("Failed to write to display {} row2: {}", disp, e);
         }
     }
 
@@ -569,6 +572,8 @@ impl Controller {
     }
 
     fn send_midi(&self, data: &[u8]) -> Result<()> {
+        trace!(?data, "MIDI output");
+
         match self.output.lock() {
             Ok(mut conn) => conn.send(data).map_err(|e| anyhow!("MIDI send failed: {}", e)),
             Err(e) => Err(anyhow!("Failed to lock MIDI output mutex: {:?}", e)),
@@ -798,6 +803,8 @@ impl WriteProvider for Arc<Mutex<Controller>> {
         let controller = self.clone();
         let addr = addr.to_string();
 
+        trace!(addr = addr.as_str(), ?value, "OSC input received");
+
         tokio::task::spawn(async move {
             let mut controller = controller.lock().await;
 
@@ -837,8 +844,11 @@ impl WriteProvider for Arc<Mutex<Controller>> {
 }
 
 fn midi_callback(_timestamp_us: u64, bytes: &[u8], input: &mut (Weak<Mutex<Controller>>, Handle)) {
+    let span = tracing::span!(tracing::Level::DEBUG, "midi_in");
+    let _enter: tracing::span::Entered<'_> = span.enter();
+
     let event = LiveEvent::parse(bytes);
-    debug!("MIDI event: {:?}", event);
+    debug!(bytes, ?event, "MIDI input");
 
     let (controller, handle) = input;
 
